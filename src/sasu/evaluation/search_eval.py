@@ -39,13 +39,17 @@ class SearchEvalResult:
 
 
 def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
-                    work_dir: Path | None = None) -> SearchEvalResult:
+                    work_dir: Path | None = None, embedder=None) -> SearchEvalResult:
     work_dir = work_dir or Path("data/cache")
     short = _git(repo, "rev-parse", "--short", rev).strip()
     snapshot = export_snapshot(repo, rev, work_dir / f"snapshot-{short}")
     conn = db.connect(work_dir / f"eval-{short}.db")
     index_repository(conn, snapshot, load_settings().sql_dialect)
-    index = MethodIndex(conn)
+    index = MethodIndex(conn, embedder)
+    if embedder is not None:
+        from sasu.rag.vectors import build_vector_index
+
+        build_vector_index(conn, index.documents, embedder)
     labels = {label.split(".")[-2] + "." + label.split(".")[-1] for label in index.labels.values()}
 
     cases = []
@@ -59,22 +63,31 @@ def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
         parts = label.split(".")
         return f"{parts[-2]}.{parts[-1]}"
 
+    plans = [
+        ("BM25 (글자 2-gram)", "bm25", False, False),
+        ("BM25 + 용어 사전", "bm25", True, False),
+        ("BM25 + 용어 사전 + 그래프 전파", "bm25", True, True),
+    ]
+    if embedder is not None:
+        plans += [
+            (f"벡터만 ({embedder.name.split('/')[-1]})", "vector", False, False),
+            ("BM25 + 벡터 (RRF) + 그래프", "rrf", True, True),
+            ("BM25 + 벡터 (선형 결합) + 그래프", "hybrid", True, True),
+        ]
+    last = plans[-1][0]
     variants = []
     examples: list[tuple[str, str, int | None]] = []
-    for name, expand, graph in [
-        ("BM25 (글자 2-gram)", False, False),
-        ("+ 용어 사전", True, False),
-        ("+ 용어 사전 + 그래프 전파", True, True),
-    ]:
+    for name, mode, expand, graph in plans:
         hits = {k: 0 for k in ks}
         rr = 0.0
         for query, gold in cases:
-            ranked = [short_label(h.label) for h in index.search(query, top=max(ks), expand=expand, graph=graph)]
+            found = index.search(query, top=max(ks), expand=expand, graph=graph, mode=mode)
+            ranked = [short_label(h.label) for h in found]
             rank = next((i + 1 for i, label in enumerate(ranked) if label in gold), None)
             for k in ks:
                 hits[k] += int(rank is not None and rank <= k)
             rr += 1 / rank if rank else 0.0
-            if expand and graph and len(examples) < 10:
+            if name == last and len(examples) < 10:
                 examples.append((query, sorted(gold)[0], rank))
         n = len(cases) or 1
         variants.append(Variant(name, {k: hits[k] / n for k in ks}, rr / n))

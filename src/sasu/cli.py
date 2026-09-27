@@ -198,6 +198,52 @@ def answers(sheet: Path = typer.Argument(..., exists=True, dir_okay=False, help=
         console.print(f"[yellow]질문을 찾지 못한 행 {missing}개 (key 열이 바뀌었거나 다른 프로젝트 질문지)[/yellow]")
 
 
+@app.command()
+def embed(provider: str = typer.Option(None, "--provider", help="local 또는 api (비우면 .env의 SASU_EMBED_PROVIDER)")) -> None:
+    """메서드 조각을 임베딩해 벡터 색인을 만든다. 이후 검색은 BM25와 벡터를 섞는다 (하이브리드)."""
+    import os
+
+    from sasu.config import load_settings
+    from sasu.rag.embeddings import EmbeddingError, make_embedder
+    from sasu.rag.search import MethodIndex
+    from sasu.rag.vectors import build_vector_index
+
+    settings = load_settings()
+    if provider:
+        os.environ["SASU_EMBED_PROVIDER"] = provider
+    try:
+        embedder = make_embedder(settings)
+    except EmbeddingError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    if embedder is None:
+        console.print("[red]임베딩이 꺼져 있어요. --provider local 또는 .env의 SASU_EMBED_PROVIDER를 설정하세요.[/red]")
+        raise typer.Exit(1)
+    conn = _open_db()
+    index = MethodIndex(conn)
+    started = time.perf_counter()
+    with console.status(f"{embedder.name}로 임베딩하는 중…") as status:
+        total, new = build_vector_index(
+            conn, index.documents, embedder,
+            progress=lambda done, all_: status.update(f"{embedder.name}로 임베딩하는 중… {done:,}/{all_:,}"),
+        )
+    console.print(
+        f"[green]벡터 색인 완료[/green]: 조각 {total:,}개 (새로 임베딩 {new:,}, 캐시 재사용 {total - new:,}) "
+        f"{time.perf_counter() - started:.1f}초"
+    )
+
+
+def _embedder_or_none():
+    """.env에 임베딩이 설정돼 있으면 만든다. 실패하면 조용히 BM25만 쓴다."""
+    from sasu.config import load_settings
+    from sasu.rag.embeddings import EmbeddingError, make_embedder
+
+    try:
+        return make_embedder(load_settings())
+    except EmbeddingError:
+        return None
+
+
 _LABEL_STYLE = {"사실": "green", "답변": "cyan", "추정": "yellow", "모름": "red", "질문": "magenta"}
 
 
@@ -221,11 +267,13 @@ def ask(
         if target:
             console.print(f"[red]대상 '{target}'을 찾지 못했어요.[/red]")
             raise typer.Exit(1)
-        hits = MethodIndex(conn).search(question, top=5)
+        index = MethodIndex(conn, _embedder_or_none())
+        hits = index.search(question, top=5)
         if not hits:
             console.print("[red]관련 코드를 찾지 못했어요. --target으로 대상을 지정해 주세요.[/red]")
             raise typer.Exit(1)
-        console.print("[dim]질문으로 찾은 후보 (다른 것이면 --target으로 지정):[/dim]")
+        how = "BM25 + 벡터 하이브리드" if index.has_vectors else "BM25 (벡터 색인 없음: sasu embed)"
+        console.print(f"[dim]질문으로 찾은 후보 · {how} (다른 것이면 --target으로 지정):[/dim]")
         for i, h in enumerate(hits, 1):
             console.print(f"[dim]  {i}. {h.label} ({h.score})[/dim]")
         targets = [target_of(conn, hits[0].method_id)]
@@ -344,12 +392,18 @@ def eval_questions(
 def eval_search(
     repo: Path = typer.Argument(..., exists=True, file_okay=False, help="전체 커밋 기록이 있는 git 저장소"),
     at: str = typer.Option(..., "--at", help="수정 전 시점으로 볼 커밋·태그 (예: v5.0.0)"),
+    embed_provider: str = typer.Option(None, "--embed", help="벡터 검색도 비교: local 또는 api"),
 ) -> None:
     """버그 증상 설명(커밋 메시지)으로 고칠 메서드를 찾는지 잰다. 기법을 하나씩 켜며 비교한다."""
+    import os
+
     from sasu.evaluation.search_eval import evaluate_search
 
+    if embed_provider:
+        os.environ["SASU_EMBED_PROVIDER"] = embed_provider
+    embedder = _embedder_or_none()
     with console.status(f"{at} 시점 코드로 색인하고, 이후 버그 수정 커밋을 질문으로 만드는 중…"):
-        r = evaluate_search(repo, at)
+        r = evaluate_search(repo, at, embedder=embedder)
     console.print(f"색인 시점 [bold]{r.snapshot}[/bold] · 질문 {r.queries}개 (한국어 버그 수정 커밋 제목)")
     ks = sorted(r.variants[0].recall)
     table = Table(title="상위 K개 안에 고친 메서드가 있는 비율", title_justify="left")

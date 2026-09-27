@@ -14,6 +14,9 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 _GRAPH_BOOST = 0.25  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 더할지
+_CANDIDATES = 100  # 하이브리드에서 각 검색이 넘기는 후보 수
+_VECTOR_WEIGHT = 0.3  # 하이브리드: 정규화한 BM25 + 0.3 × 벡터 코사인 (평가로 정함)
+_MAX_DOC_CHARS = 1500  # 조각 하나의 최대 길이 (임베딩 모델 입력 한도 고려)
 
 _CAMEL = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]*|\d+|[가-힣]+")
@@ -58,7 +61,10 @@ class Hit:
 
 
 class MethodIndex:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, embedder=None):
+        """embedder가 있고 벡터 색인(sasu embed)이 있으면 BM25와 벡터 검색을 섞는다."""
+        self.conn = conn
+        self.embedder = embedder
         docs: dict[int, list[str]] = defaultdict(list)
         self.labels: dict[int, str] = {}
         for r in conn.execute(
@@ -69,7 +75,8 @@ class MethodIndex:
             if re.match(r"^(get|set|is)[A-Z]", r["name"]) and r["body_tokens"] < 20:
                 continue
             self.labels[r["id"]] = f"{r['class_name']}.{r['name']}"
-            docs[r["id"]] += [r["name"], r["name"], r["class_name"], r["doc"] or "", (r["class_doc"] or "")[:300]]
+            words = " ".join(_CAMEL.findall(r["name"]))  # insertVcatnManage → insert Vcatn Manage
+            docs[r["id"]] += [r["name"], words, r["class_name"], r["doc"] or "", (r["class_doc"] or "")[:300]]
         for r in conn.execute("SELECT method_id, text FROM notes"):
             docs[r["method_id"]].append(r["text"])
         for r in conn.execute("SELECT method_id, value FROM string_literals WHERE length(value) BETWEEN 2 AND 60"):
@@ -91,10 +98,12 @@ class MethodIndex:
             for mid in by_label.get(r["target"] or "", []):
                 docs[mid].append(f"{r['question']} {r['answer']}")
 
-        self.tf: dict[int, Counter] = {
-            mid: Counter(tokenize(" ".join(p for p in parts if p)))
+        # 메서드 하나 = 조각 하나. BM25와 임베딩이 같은 글을 쓴다.
+        self.documents: dict[int, str] = {
+            mid: _clean(" ".join(p for p in parts if p))[:_MAX_DOC_CHARS]
             for mid, parts in docs.items() if mid in self.labels
         }
+        self.tf: dict[int, Counter] = {mid: Counter(tokenize(text)) for mid, text in self.documents.items()}
         self.lengths = {mid: sum(tf.values()) for mid, tf in self.tf.items()}
         self.avg_len = sum(self.lengths.values()) / max(len(self.lengths), 1)
         df: Counter = Counter()
@@ -135,9 +144,13 @@ class MethodIndex:
                     scores[t] += overlap
         return [t for t, _ in scores.most_common(limit)]
 
-    def search(self, query: str, top: int = 5, k1: float = 1.2, b: float = 0.75,
-               expand: bool = True, graph: bool = True) -> list[Hit]:
-        """expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교)."""
+    @property
+    def has_vectors(self) -> bool:
+        from sasu.rag.vectors import has_vector_index
+
+        return self.embedder is not None and has_vector_index(self.conn) == self.embedder.name
+
+    def bm25(self, query: str, expand: bool = True, k1: float = 1.2, b: float = 0.75) -> dict[int, float]:
         terms = Counter(tokenize(query))
         for t in self.expand(query) if expand else []:
             terms[t] += 0.5
@@ -152,6 +165,29 @@ class MethodIndex:
                 score += self.idf.get(term, 0.0) * norm * qf
             if score > 0:
                 scores[mid] = score
+        return scores
+
+    def vector(self, query: str, top: int = _CANDIDATES) -> dict[int, float]:
+        """코사인 유사도 (1 - 거리)."""
+        from sasu.rag.vectors import vector_search
+
+        query_vector = self.embedder.embed([query])[0]
+        return {mid: 1.0 - dist for mid, dist in vector_search(self.conn, query_vector, top) if mid in self.labels}
+
+    def search(self, query: str, top: int = 5, expand: bool = True, graph: bool = True,
+               mode: str = "auto") -> list[Hit]:
+        """mode: bm25, vector, hybrid(선형 결합), rrf(비교용), auto(벡터 색인이 있으면 hybrid).
+        expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교)."""
+        if mode == "auto":
+            mode = "hybrid" if self.has_vectors else "bm25"
+        if mode == "bm25":
+            scores = self.bm25(query, expand)
+        elif mode == "vector":
+            scores = self.vector(query)
+        elif mode == "rrf":  # 비교용: 순위만 합치면 BM25의 확신 있는 1순위가 희석된다
+            scores = _rrf([self.bm25(query, expand), self.vector(query)])
+        else:
+            scores = _linear(self.bm25(query, expand), self.vector(query), _VECTOR_WEIGHT)
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)
         for mid, callees in self.callees.items() if graph else []:
@@ -159,4 +195,26 @@ class MethodIndex:
             if best_callee > 0:
                 boosted[mid] = boosted.get(mid, 0.0) + _GRAPH_BOOST * best_callee
         best = sorted(boosted.items(), key=lambda kv: -kv[1])[:top]
-        return [Hit(mid, round(s, 2), self.labels[mid]) for mid, s in best]
+        return [Hit(mid, round(s, 4), self.labels[mid]) for mid, s in best]
+
+
+def _linear(bm25: dict[int, float], vector: dict[int, float], weight: float) -> dict[int, float]:
+    """BM25 점수를 최고점 1로 맞추고 벡터 코사인 유사도를 weight만큼 더한다."""
+    top = max(bm25.values(), default=0.0) or 1.0
+    fused = {mid: s / top for mid, s in bm25.items()}
+    for mid, cos in vector.items():
+        fused[mid] = fused.get(mid, 0.0) + weight * max(cos, 0.0)
+    return fused
+
+
+def _rrf(rankings: list[dict[int, float]], k: int = 60, depth: int = _CANDIDATES) -> dict[int, float]:
+    """Reciprocal Rank Fusion: 점수 크기가 다른 두 검색을 순위로 합친다."""
+    fused: dict[int, float] = defaultdict(float)
+    for scores in rankings:
+        for rank, (mid, _) in enumerate(sorted(scores.items(), key=lambda kv: -kv[1])[:depth], 1):
+            fused[mid] += 1.0 / (k + rank)
+    return dict(fused)
+
+
+def _clean(text: str) -> str:
+    return " ".join(text.replace("/**", " ").replace("*/", " ").replace("*", " ").split())

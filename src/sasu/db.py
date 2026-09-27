@@ -183,7 +183,11 @@ def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    _load_vector_extension(conn)
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        if "vec_methods" in tables:
+            conn.execute("DROP TABLE IF EXISTS vec_methods")
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
         for table in tables:
             if table not in PRESERVED_TABLES:
@@ -194,8 +198,17 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _load_vector_extension(conn: sqlite3.Connection) -> None:
+    """벡터 색인(vec_methods, sqlite-vec 가상 테이블)을 읽고 지우려면 확장이 있어야 한다."""
+    from sasu.rag.vectors import load_extension
+
+    load_extension(conn)
+
+
 def reset(conn: sqlite3.Connection) -> None:
-    """다시 색인하기 전에 이전 분석 결과를 지운다."""
+    """다시 색인하기 전에 이전 분석 결과를 지운다. 메서드 id가 바뀌므로 벡터 색인도 지운다."""
+    conn.execute("DROP TABLE IF EXISTS vec_methods")
+    conn.execute("DELETE FROM meta WHERE key = 'embed_model'")
     tables = [
         "condition_literals", "notes",
         "refs", "edges", "statement_tables", "statements", "url_mappings", "string_literals",
