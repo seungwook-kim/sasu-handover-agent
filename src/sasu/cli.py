@@ -198,6 +198,39 @@ def answers(sheet: Path = typer.Argument(..., exists=True, dir_okay=False, help=
         console.print(f"[yellow]질문을 찾지 못한 행 {missing}개 (key 열이 바뀌었거나 다른 프로젝트 질문지)[/yellow]")
 
 
+@app.command("eval-questions")
+def eval_questions(
+    repo: Path = typer.Argument(..., exists=True, file_okay=False, help="전체 커밋 기록이 있는 git 저장소"),
+    at: str = typer.Option(..., "--at", help="인수인계 시점으로 볼 커밋·태그 (예: v5.0.0)"),
+) -> None:
+    """과거 시점의 코드로 질문을 만들고, 그 뒤 버그 수정이 난 메서드를 미리 짚었는지 채점한다."""
+    from sasu.analysis.questions import KIND_LABEL
+    from sasu.evaluation.history import evaluate
+
+    with console.status(f"{at} 시점 코드를 꺼내 분석하고, 이후 버그 수정 커밋을 읽는 중…"):
+        r = evaluate(repo, at)
+    console.print(
+        f"인수인계 시점 [bold]{r.snapshot}[/bold] {r.snapshot_date} · 이후 버그 수정 커밋 {r.fix_commits}개 · "
+        f"고쳐진 메서드 {r.fixed_methods}개 / 전체 {r.candidate_methods:,}개 (기본 확률 {r.base_rate:.1%})"
+    )
+    ks = sorted(r.rankings[0].hits)
+    table = Table(title="상위 K개가 나중에 고쳐진 메서드를 맞힌 수", title_justify="left")
+    table.add_column("고르는 방법")
+    for k in ks:
+        table.add_column(f"K={k}", justify="right")
+    for rk in r.rankings:
+        table.add_row(rk.name, *[f"{rk.hits[k]} / {rk.sizes[k]} ({rk.precision(k):.0%})" for k in ks])
+    console.print(table)
+    kinds = Table(title="질문 종류별 (전체 질문 기준)", title_justify="left")
+    kinds.add_column("종류")
+    kinds.add_column("맞힘 / 질문", justify="right")
+    for kind, (h, n) in sorted(r.by_kind.items(), key=lambda kv: -kv[1][1]):
+        kinds.add_row(KIND_LABEL.get(kind, kind), f"{h} / {n}")
+    console.print(kinds)
+    for question, target, commit in r.examples:
+        console.print(f"• {target}: {question}\n  [dim]→ 이후 수정: {commit}[/dim]")
+
+
 @app.command("map")
 def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 비우면 전체 지도")) -> None:
     """프로젝트 지도: 기술 스택, 모듈 구성, 여러 모듈이 함께 쓰는 핵심 테이블."""

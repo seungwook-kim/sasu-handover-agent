@@ -31,6 +31,7 @@ _SELF_EXPLANATORY = re.compile(r"^(?:0x[0-9A-Fa-f]+|.*[/\\].*|[A-Z][a-z]+(?:[A-Z
 _STEREOTYPE_FACTOR = {"Controller": 1.0, "RestController": 1.0, "Service": 1.0, "Repository": 1.0, "Component": 0.8}
 _UTIL_FACTOR = 0.5
 _COMPLEXITY_THRESHOLD = 15
+_MULTI_SIGNAL_BONUS = 0.5  # 신호 종류가 하나 더 겹칠 때마다 우선순위 +50%
 _MAX_PER_METHOD = 2
 _MAX_PER_CLASS = 4
 
@@ -42,7 +43,7 @@ BASE = {
     "external_bean": 60,
     "empty_catch": 50,
     "copied_code": 45,
-    "complex": 40,
+    "complex": 70,
     "unused_sql": 30,
 }
 
@@ -86,9 +87,12 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
     def weight(method_id: int | None) -> float:
         if method_id is None:
             return 1.0
+        m = methods[method_id]
         n = reach.get(method_id, 0)
-        base = (1 + math.log2(1 + n)) if n else 0.5
-        return base * _STEREOTYPE_FACTOR.get(methods[method_id]["stereotype"], _UTIL_FACTOR)
+        reach_factor = (1 + math.log2(1 + n)) if n else 0.5
+        # 복잡한 메서드일수록 사람에게 물어볼 가치가 크다 (과거 기록 평가에서 가장 강한 신호)
+        complexity_factor = 1 + math.log2(max(m["complexity"], 1))
+        return reach_factor * complexity_factor * _STEREOTYPE_FACTOR.get(m["stereotype"], _UTIL_FACTOR)
 
     def target(mid: int) -> str:
         m = methods[mid]
@@ -223,11 +227,23 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
             f"쿼리 {f.name}는 부르는 곳이 없습니다. 지워도 되나요, 다른 시스템이 쓰나요?",
             f"수정 이력: {f.evidence}", path, int(line), f.name)
 
+    # 여러 종류의 신호가 겹친 메서드(드문 값 분기 + 복잡한 분기 + 무시하는 예외 …)일수록 먼저 묻는다
+    kinds_per_method: dict[int, set[str]] = defaultdict(set)
+    for q in found:
+        if q.method_id is not None:
+            kinds_per_method[q.method_id].add(q.kind)
+    for q in found:
+        extra = len(kinds_per_method.get(q.method_id, ())) - 1 if q.method_id is not None else 0
+        if extra > 0:
+            q.priority = round(q.priority * (1 + _MULTI_SIGNAL_BONUS * extra), 1)
+
     # 같은 key(같은 메서드의 같은 주석이 두 줄 등)는 우선순위가 높은 하나만
     unique: dict[str, Question] = {}
     for q in sorted(found, key=lambda q: -q.priority):
         unique.setdefault(q.key, q)
-    return _diversify(list(unique.values()), methods)
+    ordered = _diversify(list(unique.values()), methods)
+    # 지금 실행하면 오류가 나는 것(끊어진 쿼리)은 예측이 아니라 확인된 고장이라 맨 앞에 둔다
+    return [q for q in ordered if q.kind == "broken_sql"] + [q for q in ordered if q.kind != "broken_sql"]
 
 
 def url_reach(conn: sqlite3.Connection) -> dict[int, int]:
