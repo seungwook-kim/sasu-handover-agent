@@ -1,0 +1,82 @@
+"""검색 평가: 버그 증상 설명(한국어 커밋 메시지)으로 고칠 메서드를 찾을 수 있나.
+
+- 질문: 버그 수정 커밋 제목에서 "fix:" 접두어를 뗀 문장
+  (예: "개인연차 미등록 사용자의 휴가 신청·수정이 NullPointerException으로 실패하는 문제")
+- 정답: 그 커밋이 고친 메서드
+- 색인: 수정 **전** 시점 코드. 커밋 메시지와 수정 뒤 주석이 검색 대상에 섞이지 않게 한다.
+- 지표: 상위 K개 안에 정답 메서드가 하나라도 있는 비율(Recall@K), MRR.
+
+기법을 하나씩 켜며 비교한다: BM25 → + 용어 사전 → + 그래프 전파.
+"""
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from sasu import db
+from sasu.config import load_settings
+from sasu.evaluation.history import _git, export_snapshot, fix_commit_methods
+from sasu.indexer import index_repository
+from sasu.rag.search import MethodIndex
+
+_PREFIX = re.compile(r"^\s*(fix|hotfix|bug)(\([^)]*\))?\s*:\s*", re.IGNORECASE)
+_HANGUL = re.compile(r"[가-힣]")
+
+
+@dataclass
+class Variant:
+    name: str
+    recall: dict[int, float]
+    mrr: float
+
+
+@dataclass
+class SearchEvalResult:
+    snapshot: str
+    queries: int
+    variants: list[Variant]
+    examples: list[tuple[str, str, int | None]]  # (질문, 정답 중 하나, 순위)
+
+
+def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
+                    work_dir: Path | None = None) -> SearchEvalResult:
+    work_dir = work_dir or Path("data/cache")
+    short = _git(repo, "rev-parse", "--short", rev).strip()
+    snapshot = export_snapshot(repo, rev, work_dir / f"snapshot-{short}")
+    conn = db.connect(work_dir / f"eval-{short}.db")
+    index_repository(conn, snapshot, load_settings().sql_dialect)
+    index = MethodIndex(conn)
+    labels = {label.split(".")[-2] + "." + label.split(".")[-1] for label in index.labels.values()}
+
+    cases = []
+    for sha, subject, keys in fix_commit_methods(repo, rev):
+        query = _PREFIX.sub("", subject).strip()
+        gold = {k for k in keys if k in labels}
+        if gold and _HANGUL.search(query) and len(query) >= 8:
+            cases.append((query, gold))
+
+    def short_label(label: str) -> str:
+        parts = label.split(".")
+        return f"{parts[-2]}.{parts[-1]}"
+
+    variants = []
+    examples: list[tuple[str, str, int | None]] = []
+    for name, expand, graph in [
+        ("BM25 (글자 2-gram)", False, False),
+        ("+ 용어 사전", True, False),
+        ("+ 용어 사전 + 그래프 전파", True, True),
+    ]:
+        hits = {k: 0 for k in ks}
+        rr = 0.0
+        for query, gold in cases:
+            ranked = [short_label(h.label) for h in index.search(query, top=max(ks), expand=expand, graph=graph)]
+            rank = next((i + 1 for i, label in enumerate(ranked) if label in gold), None)
+            for k in ks:
+                hits[k] += int(rank is not None and rank <= k)
+            rr += 1 / rank if rank else 0.0
+            if expand and graph and len(examples) < 10:
+                examples.append((query, sorted(gold)[0], rank))
+        n = len(cases) or 1
+        variants.append(Variant(name, {k: hits[k] / n for k in ks}, rr / n))
+    conn.close()
+    return SearchEvalResult(snapshot=f"{rev} ({short})", queries=len(cases), variants=variants, examples=examples)

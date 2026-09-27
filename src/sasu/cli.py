@@ -340,6 +340,30 @@ def eval_questions(
         console.print(f"• {target}: {question}\n  [dim]→ 이후 수정: {commit}[/dim]")
 
 
+@app.command("eval-search")
+def eval_search(
+    repo: Path = typer.Argument(..., exists=True, file_okay=False, help="전체 커밋 기록이 있는 git 저장소"),
+    at: str = typer.Option(..., "--at", help="수정 전 시점으로 볼 커밋·태그 (예: v5.0.0)"),
+) -> None:
+    """버그 증상 설명(커밋 메시지)으로 고칠 메서드를 찾는지 잰다. 기법을 하나씩 켜며 비교한다."""
+    from sasu.evaluation.search_eval import evaluate_search
+
+    with console.status(f"{at} 시점 코드로 색인하고, 이후 버그 수정 커밋을 질문으로 만드는 중…"):
+        r = evaluate_search(repo, at)
+    console.print(f"색인 시점 [bold]{r.snapshot}[/bold] · 질문 {r.queries}개 (한국어 버그 수정 커밋 제목)")
+    ks = sorted(r.variants[0].recall)
+    table = Table(title="상위 K개 안에 고친 메서드가 있는 비율", title_justify="left")
+    table.add_column("검색 방법")
+    for k in ks:
+        table.add_column(f"Recall@{k}", justify="right")
+    table.add_column("MRR", justify="right")
+    for v in r.variants:
+        table.add_row(v.name, *[f"{v.recall[k]:.0%}" for k in ks], f"{v.mrr:.3f}")
+    console.print(table)
+    for query, gold, rank in r.examples:
+        console.print(f"• {query}\n  [dim]정답 {gold} → {'순위 ' + str(rank) if rank else '10위 밖'}[/dim]")
+
+
 @app.command("map")
 def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 비우면 전체 지도")) -> None:
     """프로젝트 지도: 기술 스택, 모듈 구성, 여러 모듈이 함께 쓰는 핵심 테이블."""

@@ -74,12 +74,26 @@ def export_snapshot(repo: Path, rev: str, dest: Path) -> Path:
 
 def fixed_methods_after(repo: Path, rev: str) -> tuple[dict[str, FixedMethod], int]:
     """rev 이후 버그 수정 커밋이 고친 메서드. 키는 "Class.method" (중첩 클래스는 마지막 이름)."""
+    per_commit = fix_commit_methods(repo, rev)
+    result: dict[str, FixedMethod] = {}
+    for sha, subject, keys in per_commit:
+        for key in keys:
+            fm = result.setdefault(key, FixedMethod())
+            label = f"{sha[:8]} {subject}"
+            if label not in fm.commits:
+                fm.commits.append(label)
+    return result, len(per_commit)
+
+
+def fix_commit_methods(repo: Path, rev: str) -> list[tuple[str, str, set[str]]]:
+    """rev 이후 버그 수정 커밋마다 (sha, 제목, 고친 메서드 "Class.method" 집합)."""
     log = _git(repo, "log", "--no-merges", "--format=%H%x09%s", f"{rev}..HEAD")
     commits = [line.split("\t", 1) for line in log.splitlines() if "\t" in line]
     fixes = [(sha, subject) for sha, subject in commits if FIX_PATTERN.search(subject)]
-    result: dict[str, FixedMethod] = {}
+    result: list[tuple[str, str, set[str]]] = []
     parse_cache: dict[tuple[str, str], list] = {}
     for sha, subject in fixes:
+        keys: set[str] = set()
         status = _git(repo, "diff", "--name-status", "-M", f"{sha}^", sha)
         for line in status.splitlines():
             parts = line.split("\t")
@@ -104,11 +118,9 @@ def fixed_methods_after(repo: Path, rev: str) -> tuple[dict[str, FixedMethod], i
                 ]
             for cls_name, method_name, start, end in parse_cache[key]:
                 if any(start <= n <= end for n in lines):
-                    fm = result.setdefault(f"{cls_name}.{method_name}", FixedMethod())
-                    label = f"{sha[:8]} {subject}"
-                    if label not in fm.commits:
-                        fm.commits.append(label)
-    return result, len(fixes)
+                    keys.add(f"{cls_name}.{method_name}")
+        result.append((sha, subject, keys))
+    return result
 
 
 def _changed_old_lines(diff: str) -> set[int]:

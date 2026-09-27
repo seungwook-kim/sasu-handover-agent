@@ -13,7 +13,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
-_GRAPH_BOOST = 0.5  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 더할지
+_GRAPH_BOOST = 0.25  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 더할지
 
 _CAMEL = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]*|\d+|[가-힣]+")
@@ -135,9 +135,11 @@ class MethodIndex:
                     scores[t] += overlap
         return [t for t, _ in scores.most_common(limit)]
 
-    def search(self, query: str, top: int = 5, k1: float = 1.2, b: float = 0.75) -> list[Hit]:
+    def search(self, query: str, top: int = 5, k1: float = 1.2, b: float = 0.75,
+               expand: bool = True, graph: bool = True) -> list[Hit]:
+        """expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교)."""
         terms = Counter(tokenize(query))
-        for t in self.expand(query):
+        for t in self.expand(query) if expand else []:
             terms[t] += 0.5
         scores: dict[int, float] = {}
         for mid, tf in self.tf.items():
@@ -152,7 +154,7 @@ class MethodIndex:
                 scores[mid] = score
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)
-        for mid, callees in self.callees.items():
+        for mid, callees in self.callees.items() if graph else []:
             best_callee = max((scores.get(c, 0.0) for c in callees), default=0.0)
             if best_callee > 0:
                 boosted[mid] = boosted.get(mid, 0.0) + _GRAPH_BOOST * best_callee
