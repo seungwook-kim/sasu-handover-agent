@@ -30,7 +30,9 @@ URL /cop/bbs/selectArticleList.do
     └── 화면 WEB-INF/jsp/egovframework/com/cop/bbs/EgovArticleList.jsp
 ```
 
-eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(12.1%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(4.7%)입니다.
+eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(9.9%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(6.9%)입니다.
+
+문자열을 더해 만드는 동적 쿼리 ID(`"LoginUsr.updateLoginIncorrect" + userSe`), static 유틸 호출, XML 설정에만 있는 저장소 밖 빈도 따라가거나 표시합니다. 기본 보기는 Controller·Service·DAO만 펼치고, `--full`을 붙이면 유틸 내부까지 모두 펼칩니다. 검증 과정은 [관문 1 검증](docs/gate1-verification.md)에 정리했습니다.
 
 ## 왜 만드나
 
@@ -82,8 +84,8 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 
 날짜 대신 관문을 통과해야 다음 단계로 넘어갑니다.
 
-- [ ] 준비: 대상 프로젝트를 AI 없이 직접 읽고 기능 3개의 흐름 정답 메모 작성
-- [ ] 기반 그래프: Java + MyBatis 연결 (관문 1: 정답 메모의 흐름이 그대로 나옴)
+- [x] 준비: 대상 프로젝트를 사수 없이 직접 읽고 기능 3개의 흐름 정답 메모 작성
+- [x] 기반 그래프: Java + MyBatis 연결 (관문 1: 정답 메모의 흐름이 그대로 나옴 → [검증 기록](docs/gate1-verification.md))
 - [ ] 보조 기능: 지도, 공통화, 불필요한 소스
 - [ ] 질문 생성
 - [ ] 답변 연결 + "왜?" 질의응답 (관문 2: 폴더 하나로 질문 → 답 입력 → "왜?" 답변까지)
