@@ -44,7 +44,7 @@ def resolve_target(conn: sqlite3.Connection, text: str) -> list[Target]:
         rows = conn.execute(
             "SELECT DISTINCT method_id AS id FROM url_mappings WHERE url = ?", (normalize_url(text),)
         ).fetchall()
-    elif m := re.match(r"^(.+\.(?:java)):(\d+)$", text):
+    elif m := re.match(r"^(.+\.(?:java|py)):(\d+)$", text):
         path, line = m.group(1).replace("\\", "/"), int(m.group(2))
         rows = conn.execute(
             """SELECT m.id FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id

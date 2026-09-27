@@ -60,7 +60,14 @@ def export_sheet(conn: sqlite3.Connection, path: Path, include_answered: bool = 
 
 def import_sheet(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
     """답변 열이 채워진 행을 저장한다. 돌려주는 값: (저장한 답변 수, 찾지 못한 행 수)."""
-    ws = load_workbook(path, read_only=True).active
+    wb = load_workbook(path, read_only=True)
+    try:
+        return _import_rows(conn, wb.active)
+    finally:
+        wb.close()  # read_only는 파일을 열어 둔다. 닫지 않으면 Windows에서 파일을 지울 수 없다
+
+
+def _import_rows(conn: sqlite3.Connection, ws) -> tuple[int, int]:
     header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
     idx = {name: header.index(name) for name, _ in COLUMNS if name in header}
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")

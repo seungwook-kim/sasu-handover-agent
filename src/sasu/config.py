@@ -68,3 +68,13 @@ def set_current_project(name: str) -> None:
 
 def list_projects() -> list[str]:
     return sorted(p.stem for p in PROJECTS_DIR.glob("*.db")) if PROJECTS_DIR.is_dir() else []
+
+
+def active_db_path() -> Path | None:
+    """지금 쓸 분석 파일: SASU_DB_PATH가 있으면 그것, 없으면 지금 프로젝트의 파일. 아직 분석 전이면 None."""
+    explicit = load_settings().db_path
+    if explicit is not None:
+        return explicit if explicit.exists() else None
+    name = current_project()
+    path = project_db(name) if name else None
+    return path if path is not None and path.exists() else None

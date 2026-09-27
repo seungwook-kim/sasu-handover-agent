@@ -12,6 +12,7 @@ from rich.tree import Tree
 
 from sasu import __version__, db
 from sasu.config import (
+    active_db_path,
     current_project,
     list_projects,
     load_settings,
@@ -90,6 +91,19 @@ def index(repo: Path = typer.Argument(..., exists=True, file_okay=False, help="�
     table.add_row("연결", f"{stats.edges:,}")
     console.print(table)
     console.print(f"저장 위치: {db_path} (지금 프로젝트로 설정됨)")
+
+    # 다시 분석하면 벡터 색인도 지워진다. 임베딩을 설정해 두었으면 바로 다시 만든다 (바뀐 조각만 새로 임베딩)
+    embedder = _embedder_or_none()
+    if embedder is not None:
+        from sasu.rag.search import MethodIndex
+        from sasu.rag.vectors import build_vector_index
+
+        with console.status(f"{embedder.name}로 벡터 색인을 만드는 중…") as status:
+            total, new = build_vector_index(
+                conn, MethodIndex(conn).documents, embedder,
+                progress=lambda done, all_: status.update(f"벡터 색인 {done:,}/{all_:,}"),
+            )
+        console.print(f"벡터 색인: 조각 {total:,}개 (새로 임베딩 {new:,}, 캐시 재사용 {total - new:,})")
 
 
 @app.command()
@@ -210,14 +224,13 @@ def questions(
     export: Path = typer.Option(None, "--export", help="엑셀로 내보낼 경로 (예: 인수인계질문.xlsx)"),
 ) -> None:
     """떠나는 개발자에게 물어야 할 인수인계 질문을 만든다. 이미 받은 답변은 그대로 둔다."""
-    from sasu.analysis.questions import KIND_LABEL, generate_questions, save_questions
+    from sasu.analysis.questions import KIND_LABEL
+    from sasu.handover import refresh_questions
     from sasu.handover_sheet import export_sheet
 
     conn = _open_db()
-    repo_path = _meta(conn, "repo_path")
-    generated = generate_questions(conn)
-    new, updated, stale = save_questions(conn, generated, Path(repo_path) if repo_path != "-" else None)
-    console.print(f"질문 {len(generated)}개 (새 질문 {new}, 갱신 {updated}, 코드가 바뀌어 사라진 질문 {stale})")
+    total, new, updated, stale = refresh_questions(conn)
+    console.print(f"질문 {total}개 (새 질문 {new}, 갱신 {updated}, 코드가 바뀌어 사라진 질문 {stale})")
 
     rows = conn.execute(
         "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id LIMIT ?", (top,)
@@ -366,18 +379,10 @@ def answer_cmd(
     by: str = typer.Option(None, "--by", help="답한 사람"),
 ) -> None:
     """떠난 뒤 연락해서 받은 답처럼, 질문 하나의 답을 바로 기록한다."""
-    from datetime import datetime, timezone
+    from sasu.handover import save_answer
 
-    conn = _open_db()
     qid = int(question_id.lstrip("Qq"))
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    cur = conn.execute(
-        """UPDATE questions SET answer = ?, answered_by = ?, status = 'answered', answered_at = ?, updated_at = ?
-           WHERE id = ?""",
-        (text, by, now, now, qid),
-    )
-    conn.commit()
-    if not cur.rowcount:
+    if not save_answer(_open_db(), qid, text, by):
         console.print(f"[red]Q{qid} 질문이 없어요. `sasu questions`로 번호를 확인하세요.[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Q{qid}에 답을 저장했어요.[/green] 이제 `sasu ask`가 이 답을 근거로 씁니다.")
@@ -386,28 +391,21 @@ def answer_cmd(
 @app.command()
 def draft(question_id: str = typer.Argument(..., help="질문 번호 (예: Q12)")) -> None:
     """떠난 개발자에게 보낼 질문 메시지 초안을 만든다. 한 번에 정확히 묻도록 코드 위치와 근거를 담는다."""
-    conn = _open_db()
-    q = conn.execute("SELECT * FROM questions WHERE id = ?", (int(question_id.lstrip("Qq")),)).fetchone()
-    if q is None:
+    from sasu.handover import draft_message
+
+    qid = int(question_id.lstrip("Qq"))
+    message = draft_message(_open_db(), qid)
+    if message is None:
         console.print("[red]질문이 없어요.[/red]")
         raise typer.Exit(1)
-    project = _meta(conn, "repo_path").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    location = f"{q['file_path']}:{q['line']}" if q["file_path"] else "-"
-    message = (
-        f"안녕하세요, {project} 인수인계를 받은 담당자입니다. 코드 한 곳만 여쭤보고 싶어 연락드렸습니다.\n\n"
-        f"■ 위치: {q['target'] or '-'} ({location})\n"
-        + (f"■ 코드: {q['code']}\n" if q["code"] else "")
-        + f"■ 질문: {q['question']}\n"
-        f"■ 제가 확인한 것: {q['why']}\n\n"
-        "짧게라도 답을 주시면 인수인계 기록에 남겨 다음 담당자도 볼 수 있게 하겠습니다. 감사합니다."
-    )
     console.print(message, markup=False, highlight=False)
-    console.print(f"\n[dim]답을 받으면: sasu answer Q{q['id']} \"받은 답\" --by 이름[/dim]")
+    console.print(f"\n[dim]답을 받으면: sasu answer Q{qid} \"받은 답\" --by 이름[/dim]")
 
 
 def _repo(conn) -> Path | None:
-    path = _meta(conn, "repo_path")
-    return Path(path) if path != "-" and Path(path).exists() else None
+    from sasu.handover import repo_of
+
+    return repo_of(conn)
 
 
 @app.command("eval-questions")
@@ -506,6 +504,29 @@ def eval_why(
         table.add_row(key, str(summary["사수 (RAG)"][key]), str(summary["LLM만"][key]))
     console.print(table)
     console.print(f"[dim]질문별 답과 채점 이유: {out}[/dim]")
+
+
+@app.command()
+def serve(
+    port: int = typer.Option(8765, "--port", help="포트"),
+    host: str = typer.Option("127.0.0.1", "--host", help="0.0.0.0이면 같은 망의 다른 PC에서도 열린다"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="브라우저를 자동으로 열지 않는다"),
+) -> None:
+    """웹 화면을 연다: 한눈에 보기, 인수인계 질문, 물어보기, 경로 추적, 정리하기."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from sasu.web.server import create_app
+
+    url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
+    console.print(f"사수 웹 화면: [bold]{url}[/bold]  (끝내려면 Ctrl+C)")
+    if active_db_path() is None:
+        console.print("[yellow]아직 분석한 프로젝트가 없어요. `sasu index <프로젝트 폴더>`를 먼저 실행하세요.[/yellow]")
+    if not no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 
 
 @app.command("map")
@@ -655,12 +676,8 @@ def _undo_msys_path(arg: str) -> str:
 
 
 def _open_db():
-    settings = load_settings()
-    path = settings.db_path
+    path = active_db_path()
     if path is None:
-        name = current_project()
-        path = project_db(name) if name else None
-    if path is None or not path.exists():
         console.print("[red]분석 결과가 없어요. 먼저 `sasu index <프로젝트 폴더>`를 실행하세요.[/red]")
         raise typer.Exit(1)
     return db.connect(path)

@@ -4,7 +4,9 @@
 
 **Java(Spring · MyBatis · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
 
-> **상태: 개발 중.** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답까지 동작합니다. 다음은 웹 화면입니다.
+> **상태: 개발 중.** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면까지 동작합니다.
+
+![경로 추적 화면](docs/images/web-trace.jpg)
 
 ## 사용해 보기
 
@@ -13,7 +15,8 @@
 ```bash
 uv sync
 uv run sasu fetch-sample                                   # 예제: 전자정부 표준프레임워크 공통컴포넌트
-uv run sasu index data/repos/egovframe-common-components   # 분석 (약 2초)
+uv run sasu index data/repos/egovframe-common-components   # 분석 (약 5초)
+uv run sasu serve                                          # 웹 화면 (브라우저가 열림)
 uv run sasu map                                            # 프로젝트 지도: 기술 스택, 모듈, 핵심 테이블
 uv run sasu map cop.bbs                                    # 모듈 하나: URL마다 읽고 쓰는 테이블
 uv run sasu trace /cop/bbs/selectArticleList.do            # URL 하나의 경로 추적
@@ -21,13 +24,29 @@ uv run sasu common                                         # 공통 코드 사�
 uv run sasu unused                                         # 끊어진 쿼리 참조, 안 쓰는 SQL·URL·메서드·JSP
 uv run sasu questions --export 인수인계질문.xlsx             # 인수인계 질문 만들기 + 엑셀 질문지
 uv run sasu answers 인수인계질문.xlsx                        # 답을 적은 질문지 가져오기
-uv run sasu embed --provider local                         # 벡터 색인 (처음 한 번, uv sync --extra local-embed)
+uv run sasu embed --provider local                         # 벡터 색인 (처음 한 번, uv sync --extra local-embed. 이후 index 때 자동 갱신)
 uv run sasu ask "휴가 신청할 때 연차가 없으면 어떻게 돼?"      # RAG: 근거를 모아 "왜?"에 답하기
 uv run sasu draft Q12                                      # 떠난 개발자에게 보낼 질문 초안
 uv run sasu stats                                          # 분석 요약
 uv run sasu projects                                       # 분석한 프로젝트 목록 (*: 지금 프로젝트)
 uv run sasu use full-stack-fastapi-template                # 다른 프로젝트로 바꾸기
 ```
+
+### 웹 화면
+
+`sasu serve`로 브라우저에서 모든 기능을 씁니다. 화면 파일은 패키지 안에 있고 외부 CDN을 쓰지 않아 인터넷이 막힌 PC에서도 그대로 열립니다.
+
+| 탭 | 하는 일 |
+| --- | --- |
+| 한눈에 보기 | 기술 스택, URL이 SQL까지 이어지는 비율, 모듈별 URL·테이블, 여러 모듈이 함께 쓰는 테이블 |
+| 인수인계 질문 | 질문마다 바로 답 입력(Ctrl+Enter), 떠난 개발자에게 보낼 메시지 복사, 엑셀 내보내기·가져오기, 답변 진행률 |
+| 물어보기 | 질문 → 찾은 코드 후보 → 근거(E1, E2…) → 등급과 근거 번호가 붙은 답. 근거 번호를 누르면 해당 근거로 이동 |
+| 경로 추적 | URL 자동 완성, Controller→Service→DAO→SQL→테이블 트리 |
+| 정리하기 | 끊어진 쿼리, 부르는 곳이 없는 SQL·URL·메서드·JSP, 공통 코드, 복사한 코드, 중복 SQL |
+
+어느 화면에서든 `파일:줄`을 누르면 해당 코드가 오른쪽에 열립니다.
+
+![인수인계 질문 화면](docs/images/web-questions.jpg)
 
 분석 결과는 프로젝트마다 `data/projects/<폴더 이름>.db`에 따로 저장됩니다. 마지막으로 분석한 프로젝트가 지금 프로젝트가 되고, 인수인계 질문과 답은 다른 프로젝트를 분석해도 섞이거나 지워지지 않습니다.
 
@@ -163,6 +182,7 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] 답변 연결 + "왜?" 질의응답 (관문 2: 폴더 하나로 질문 → 답 입력 → "왜?" 답변까지) → [RAG 구조와 평가](docs/rag.md)
 - [x] 평가와 개선 (관문 3: 비교표 완성, 약한 결과도 기록)
 - [x] Python 프로젝트 지원 (FastAPI · Flask · Django), 프로젝트별 분석 파일
-- [ ] 다듬기: 웹 UI, 설치 패키지, 엑셀 내보내기
+- [x] 다듬기: 웹 화면, 엑셀 내보내기·가져오기
+- [ ] 설치 패키지
 - [ ] 사용 테스트
 - [ ] 확장: MCP, 기존 동작 목록
