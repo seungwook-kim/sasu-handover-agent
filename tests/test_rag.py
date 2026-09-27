@@ -149,9 +149,15 @@ def test_korean_search_uses_field_comments(setup):
     conn, _, _ = setup
     index = MethodIndex(conn)
     assert "remain" in index.expand("남은 연차가 없으면 어떻게 돼?")
-    # 컨트롤러(Javadoc "휴가를 신청한다")와 서비스(남은 연차 로직) 둘 다 맞는 후보다
-    top2 = [h.label for h in index.search("남은 연차가 없으면 신청이 어떻게 돼?", top=2)]
-    assert "VacationServiceImpl.apply" in top2
+    # 서비스는 잘 맞는 DAO(selectRemain)를 부르므로, 그래프 전파를 켜면 순위가 올라간다
+    query = "남은 연차가 없으면 신청이 어떻게 돼?"
+
+    def score(graph: bool) -> float:
+        hits = {h.label: h.score for h in index.search(query, top=10, graph=graph)}
+        return hits["VacationServiceImpl.apply"]
+
+    assert score(graph=True) > score(graph=False)
+    assert "VacationServiceImpl.apply" in [h.label for h in index.search(query, top=3)]
     assert "getRemainDays" not in [h.label.split(".")[1] for h in index.search("남은 연차", top=10)]
 
 
