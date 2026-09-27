@@ -17,6 +17,8 @@ _GRAPH_BOOST = 0.25  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 �
 _CANDIDATES = 100  # 하이브리드에서 각 검색이 넘기는 후보 수
 _VECTOR_WEIGHT = 0.3  # 하이브리드: 정규화한 BM25 + 0.3 × 벡터 코사인 (평가로 정함)
 _MAX_DOC_CHARS = 1500  # 조각 하나의 최대 길이 (임베딩 모델 입력 한도 고려)
+_ANSWER_BOOST = 0.5  # 인수인계 답변이 질문과 맞으면 1위 점수의 최대 50%를 더한다
+_ANSWER_MIN_COVERAGE = 0.34  # 질문 단어(idf 가중) 중 답변에 있는 비율이 이 이상일 때만
 
 _CAMEL = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]*|\d+|[가-힣]+")
@@ -33,10 +35,26 @@ _STOP_EN = {"get", "set", "is", "to", "the", "and", "of", "egov", "vo", "impl", 
 _STOP_BIGRAMS = {w[i:i + 2] for w in _STOP_KO for i in range(len(w) - 1)} | {w for w in _STOP_KO if len(w) == 2}
 
 
+# 말끝의 조사·어미. "코드는"이 "드는", "처리해"가 "리해" 같은 엉뚱한 2-gram을 만들지 않게 뗀다.
+# 명사 끝과 헷갈리는 것(이·가·의·과·도·요 등)은 넣지 않는다 ("휴가", "처리결과", "불필요")
+_ENDINGS = tuple(sorted({
+    "했습니다", "합니다", "하는지", "하나요", "해서", "하면", "할때", "해요", "나요", "까요",
+    "으로는", "에서는", "으로", "에서", "에게", "까지", "부터", "은", "는", "을", "를", "해", "할",
+}, key=len, reverse=True))
+
+
+def _strip_ending(word: str) -> str:
+    for ending in _ENDINGS:
+        if word.endswith(ending) and len(word) - len(ending) >= 2:
+            return word[: -len(ending)]
+    return word
+
+
 def tokenize(text: str) -> list[str]:
     tokens: list[str] = []
     for word in _WORD.findall(text):
         if re.match(r"[가-힣]", word):
+            word = _strip_ending(word)
             if word in _STOP_KO:
                 continue
             tokens.extend(
@@ -96,9 +114,11 @@ class MethodIndex:
         by_label = defaultdict(list)
         for mid, label in self.labels.items():
             by_label[label].append(mid)
+        self.answer_terms: dict[int, set[str]] = defaultdict(set)
         for r in conn.execute("SELECT target, question, answer FROM questions WHERE answer IS NOT NULL AND stale = 0"):
             for mid in by_label.get(r["target"] or "", []):
                 docs[mid].append(f"{r['question']} {r['answer']}")
+                self.answer_terms[mid] |= set(tokenize(f"{r['question']} {r['answer']}"))
 
         # 메서드 하나 = 조각 하나. BM25와 임베딩이 같은 글을 쓴다.
         self.documents: dict[int, str] = {
@@ -190,6 +210,7 @@ class MethodIndex:
             scores = _rrf([self.bm25(query, expand), self.vector(query)])
         else:
             scores = _linear(self.bm25(query, expand), self.vector(query), _VECTOR_WEIGHT)
+        scores = self._answer_boost(query, scores)
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)
         for mid, callees in self.callees.items() if graph else []:
@@ -198,6 +219,24 @@ class MethodIndex:
                 boosted[mid] = boosted.get(mid, 0.0) + _GRAPH_BOOST * best_callee
         best = sorted(boosted.items(), key=lambda kv: -kv[1])[:top]
         return [Hit(mid, round(s, 4), self.labels[mid]) for mid, s in best]
+
+
+    def _answer_boost(self, query: str, scores: dict[int, float]) -> dict[int, float]:
+        """사람이 남긴 인수인계 답변이 질문과 맞는 메서드를 끌어올린다.
+        메서드 문서는 코드·주석으로 길어서 답변 몇 줄이 BM25 길이 보정에 묻히기 때문이다."""
+        if not self.answer_terms:
+            return scores
+        terms = set(tokenize(query))
+        total = sum(self.idf.get(t, 0.0) for t in terms)
+        if not total:
+            return scores
+        top = max(scores.values(), default=0.0) or 1.0
+        boosted = dict(scores)
+        for mid, answer in self.answer_terms.items():
+            coverage = sum(self.idf.get(t, 0.0) for t in terms & answer) / total
+            if coverage >= _ANSWER_MIN_COVERAGE:
+                boosted[mid] = boosted.get(mid, 0.0) + _ANSWER_BOOST * coverage * top
+        return boosted
 
 
 def _linear(bm25: dict[int, float], vector: dict[int, float], weight: float) -> dict[int, float]:
