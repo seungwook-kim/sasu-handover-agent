@@ -17,6 +17,7 @@ venv/
 *.sqlite3
 data/repos/
 data/cache/
+data/out/
 
 # 에디터, OS
 .vscode/

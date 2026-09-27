@@ -8,6 +8,7 @@ SI 프로젝트(Spring MVC + MyBatis)에서 계층을 잇는 데 필요한 정�
 """
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 
 import tree_sitter_java as tsjava
@@ -85,6 +86,24 @@ class EmptyCatch:
 
 
 @dataclass
+class ConditionLiteral:
+    """if 조건이나 switch case에 직접 쓴 값. "R3".equals(code), case 7: 같은 것."""
+
+    value: str
+    line: int
+    source: str  # 조건식 원문 (한 줄로 줄임)
+
+
+@dataclass
+class NoteComment:
+    """TODO·FIXME·임시·주의 같은 표시가 있는 주석."""
+
+    tag: str
+    text: str
+    line: int
+
+
+@dataclass
 class JavaMethod:
     name: str
     line_start: int
@@ -100,6 +119,8 @@ class JavaMethod:
     # 식별자·리터럴을 지운 본문 토큰의 해시. 변수 이름만 다른 복사-붙여넣기 코드를 찾는 데 쓴다.
     body_hash: str | None = None
     body_tokens: int = 0
+    condition_literals: list[ConditionLiteral] = field(default_factory=list)
+    notes: list[NoteComment] = field(default_factory=list)
 
     @property
     def mapping_paths(self) -> list[str]:
@@ -310,11 +331,48 @@ def _normalized_tokens(node: Node, source: bytes) -> list[str]:
     return tokens
 
 
+# "임시 비밀번호" 같은 업무 용어는 빼고, 임시방편을 뜻하는 표현만 잡는다
+_NOTE_TAG = re.compile(
+    r"\b(TODO|FIXME|XXX|HACK)\b"
+    r"|(임시(?=로|\s*(?:처리|조치|코드|방편|적용|대응|수정))|하드코딩|주의|꼼수|나중에|확인\s*필요|추후)",
+    re.IGNORECASE,
+)
+_LITERAL_VALUE_NODES = {"string_literal", "decimal_integer_literal", "hex_integer_literal", "character_literal"}
+
+
+def _collect_condition_literals(cond: Node, source: bytes, method: JavaMethod) -> None:
+    text = " ".join(_text(cond, source).split())
+    stack = [cond]
+    while stack:
+        n = stack.pop()
+        if n.type in _LITERAL_VALUE_NODES:
+            value = _string_value(n, source) if n.type == "string_literal" else _text(n, source)
+            method.condition_literals.append(ConditionLiteral(value, n.start_point.row + 1, text[:160]))
+            continue
+        stack.extend(n.children)
+
+
 def _scan_body(body: Node, source: bytes, method: JavaMethod) -> None:
     stack = [body]
     while stack:
         n = stack.pop()
         t = n.type
+        if t == "if_statement":
+            cond = n.child_by_field_name("condition")
+            if cond is not None:
+                _collect_condition_literals(cond, source, method)
+        elif t == "switch_label":
+            _collect_condition_literals(n, source, method)
+        elif t in ("line_comment", "block_comment"):
+            text = _text(n, source)
+            m = _NOTE_TAG.search(text)
+            if m:
+                method.notes.append(NoteComment(
+                    tag=(m.group(1) or m.group(2)).upper() if m.group(1) else m.group(2),
+                    text=" ".join(text.strip("/* ").split())[:200],
+                    line=n.start_point.row + 1,
+                ))
+            continue
         if t in _DECISION_NODES:
             method.complexity += 1
         elif t == "binary_expression":

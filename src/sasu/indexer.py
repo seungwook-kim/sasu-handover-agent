@@ -135,6 +135,14 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
                 "INSERT INTO string_literals (method_id, value, line) VALUES (?, ?, ?)",
                 [(method_id, value, line) for value, line in m.string_literals],
             )
+            conn.executemany(
+                "INSERT INTO condition_literals (method_id, value, line, source) VALUES (?, ?, ?, ?)",
+                [(method_id, c.value, c.line, c.source) for c in m.condition_literals],
+            )
+            conn.executemany(
+                "INSERT INTO notes (method_id, tag, text, line) VALUES (?, ?, ?, ?)",
+                [(method_id, n.tag, n.text, n.line) for n in m.notes],
+            )
 
 
 _MAX_REF_FILE_BYTES = 2_000_000

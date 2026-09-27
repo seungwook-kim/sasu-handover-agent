@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_kind, src_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_kind, dst_id);
 
+CREATE TABLE IF NOT EXISTS condition_literals (
+    method_id INTEGER NOT NULL REFERENCES methods(id),
+    value TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    source TEXT NOT NULL            -- 조건식 원문
+);
+CREATE INDEX IF NOT EXISTS idx_condition_literals ON condition_literals(value);
+
+CREATE TABLE IF NOT EXISTS notes (
+    method_id INTEGER NOT NULL REFERENCES methods(id),
+    tag TEXT NOT NULL,              -- TODO, FIXME, 임시, 주의 ...
+    text TEXT NOT NULL,
+    line INTEGER NOT NULL
+);
+
 -- JSP·JS·설정 파일이 가리키는 URL, JSP, include, 메서드 이름
 CREATE TABLE IF NOT EXISTS refs (
     file_id INTEGER NOT NULL REFERENCES files(id),
@@ -131,11 +146,36 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 인수인계 질문과 답변. 사람이 입력한 데이터라 다시 색인해도, 스키마가 바뀌어도 지우지 않는다.
+-- 코드 id는 색인할 때마다 바뀌므로 key(종류·파일·메서드·세부)로 같은 질문을 알아본다.
+CREATE TABLE IF NOT EXISTS questions (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    priority REAL NOT NULL,
+    question TEXT NOT NULL,
+    why TEXT NOT NULL,              -- 이 질문을 하는 이유 (코드 근거)
+    file_path TEXT,
+    line INTEGER,
+    target TEXT,                    -- Class.method 또는 쿼리 ID
+    code TEXT,                      -- 해당 줄 코드
+    status TEXT NOT NULL DEFAULT 'open',   -- open, answered, skipped
+    stale INTEGER NOT NULL DEFAULT 0,      -- 코드가 바뀌어 이번 분석에서 다시 나오지 않음
+    answer TEXT,
+    answered_by TEXT,
+    answered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+# 사람이 입력한 데이터. 색인 초기화·스키마 변경 때도 남긴다.
+PRESERVED_TABLES = {"questions"}
 
 
 # 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -145,7 +185,8 @@ def connect(path: Path) -> sqlite3.Connection:
     if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
         for table in tables:
-            conn.execute(f"DROP TABLE IF EXISTS {table}")
+            if table not in PRESERVED_TABLES:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
@@ -155,6 +196,7 @@ def connect(path: Path) -> sqlite3.Connection:
 def reset(conn: sqlite3.Connection) -> None:
     """다시 색인하기 전에 이전 분석 결과를 지운다."""
     tables = [
+        "condition_literals", "notes",
         "refs", "edges", "statement_tables", "statements", "url_mappings", "string_literals",
         "empty_catches", "calls", "methods", "fields", "classes", "files", "meta",
     ]

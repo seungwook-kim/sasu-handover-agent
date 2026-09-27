@@ -152,6 +152,52 @@ def unused(
         console.print()
 
 
+@app.command()
+def questions(
+    top: int = typer.Option(20, "--top", help="보여 줄 질문 수"),
+    export: Path = typer.Option(None, "--export", help="엑셀로 내보낼 경로 (예: 인수인계질문.xlsx)"),
+) -> None:
+    """떠나는 개발자에게 물어야 할 인수인계 질문을 만든다. 이미 받은 답변은 그대로 둔다."""
+    from sasu.analysis.questions import KIND_LABEL, generate_questions, save_questions
+    from sasu.handover_sheet import export_sheet
+
+    conn = _open_db()
+    repo_path = _meta(conn, "repo_path")
+    generated = generate_questions(conn)
+    new, updated, stale = save_questions(conn, generated, Path(repo_path) if repo_path != "-" else None)
+    console.print(f"질문 {len(generated)}개 (새 질문 {new}, 갱신 {updated}, 코드가 바뀌어 사라진 질문 {stale})")
+
+    rows = conn.execute(
+        "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id LIMIT ?", (top,)
+    ).fetchall()
+    for i, q in enumerate(rows, 1):
+        mark = "[green]답변함[/green]" if q["status"] == "answered" else ""
+        console.print(
+            f"\n[bold]{i}. {q['question']}[/bold] {mark}\n"
+            f"   [cyan]{KIND_LABEL.get(q['kind'], q['kind'])}[/cyan] · {q['target'] or '-'} "
+            f"[dim]{_short(q['file_path'])}:{q['line']}[/dim]\n"
+            f"   [dim]{q['why']}[/dim]"
+            + (f"\n   [dim]> {q['code']}[/dim]" if q["code"] else "")
+            + (f"\n   [green]답: {q['answer']}[/green]" if q["answer"] else "")
+        )
+    if export:
+        n = export_sheet(conn, export)
+        console.print(f"\n[green]엑셀로 내보냄[/green]: {export} ({n}개). 답변 열을 채운 뒤 `sasu answers {export}`로 가져오세요.")
+
+
+@app.command()
+def answers(sheet: Path = typer.Argument(..., exists=True, dir_okay=False, help="답변을 적은 질문지 엑셀")) -> None:
+    """답변을 적은 인수인계 질문지를 가져와 코드 위치에 연결해 저장한다."""
+    from sasu.handover_sheet import import_sheet
+
+    conn = _open_db()
+    saved, missing = import_sheet(conn, sheet)
+    total = conn.execute("SELECT COUNT(*) FROM questions WHERE status = 'answered'").fetchone()[0]
+    console.print(f"답변 {saved}개를 저장했어요. (지금까지 답변 {total}개)")
+    if missing:
+        console.print(f"[yellow]질문을 찾지 못한 행 {missing}개 (key 열이 바뀌었거나 다른 프로젝트 질문지)[/yellow]")
+
+
 @app.command("map")
 def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 비우면 전체 지도")) -> None:
     """프로젝트 지도: 기술 스택, 모듈 구성, 여러 모듈이 함께 쓰는 핵심 테이블."""
