@@ -20,7 +20,7 @@ from pathlib import Path
 
 from sasu import db
 from sasu.analysis.questions import generate_questions, url_reach
-from sasu.config import load_settings
+from sasu.config import cache_dir, load_settings
 from sasu.indexer import index_repository
 from sasu.parsers.java_parser import parse_java
 
@@ -139,7 +139,7 @@ def _changed_old_lines(diff: str) -> set[int]:
 
 def evaluate(repo: Path, rev: str, ks: tuple[int, ...] = (10, 20, 50), seed: int = 7,
              work_dir: Path | None = None) -> EvalResult:
-    work_dir = work_dir or Path("data/cache")
+    work_dir = work_dir or cache_dir()
     short = _git(repo, "rev-parse", "--short", rev).strip()
     date = _git(repo, "log", "-1", "--format=%ad", "--date=short", rev).strip()
     snapshot = export_snapshot(repo, rev, work_dir / f"snapshot-{short}")

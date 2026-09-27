@@ -1,5 +1,6 @@
 """사수 명령줄 도구."""
 
+import os
 import re
 import subprocess
 import time
@@ -13,11 +14,14 @@ from rich.tree import Tree
 from sasu import __version__, db
 from sasu.config import (
     active_db_path,
+    cache_dir,
     current_project,
+    home,
     list_projects,
     load_settings,
     project_db,
     project_name,
+    repos_dir,
     set_current_project,
 )
 from sasu.indexer import index_repository
@@ -33,11 +37,9 @@ _STYLE = {
     "Repository": "yellow",
 }
 
-SAMPLES = {
-    "java": ("https://github.com/eGovFramework/egovframe-common-components.git",
-             Path("data/repos/egovframe-common-components"), "약 250MB"),
-    "python": ("https://github.com/fastapi/full-stack-fastapi-template.git",
-               Path("data/repos/full-stack-fastapi-template"), "약 10MB"),
+SAMPLES = {  # 종류: (주소, 폴더 이름, 크기)
+    "java": ("https://github.com/eGovFramework/egovframe-common-components.git", "egovframe-common-components", "약 250MB"),
+    "python": ("https://github.com/fastapi/full-stack-fastapi-template.git", "full-stack-fastapi-template", "약 10MB"),
 }
 
 
@@ -47,19 +49,83 @@ def version() -> None:
     console.print(f"sasu {__version__}")
 
 
+@app.command()
+def setup(
+    provider: str = typer.Option(None, "--llm", help="openai(사내 LLM·OpenRouter 등 OpenAI 호환 주소) 또는 claude-code"),
+    base_url: str = typer.Option(None, "--base-url", help="OpenAI 호환 주소 (예: http://llm.사내:8000/v1)"),
+    api_key: str = typer.Option(None, "--api-key", help="API 키 (사내 서버가 키를 안 쓰면 아무 값)"),
+    model: str = typer.Option(None, "--model", help="모델 이름"),
+    embed: str = typer.Option(None, "--embed", help="벡터 검색: none, local, api"),
+    dialect: str = typer.Option(None, "--dialect", help="Mapper XML DB 종류 (oracle, mysql, postgres …)"),
+) -> None:
+    """처음 한 번: LLM 연결과 검색 방식을 정해 설정 파일을 만든다. 옵션을 비우면 차례로 묻는다."""
+    from sasu.setup_env import claude_cli_logged_in, write_env
+
+    given = {
+        "SASU_LLM_PROVIDER": provider and provider.lower(), "SASU_LLM_BASE_URL": base_url, "SASU_LLM_API_KEY": api_key,
+        "SASU_LLM_MODEL": model, "SASU_EMBED_PROVIDER": embed and embed.lower(), "SASU_SQL_DIALECT": dialect,
+    }
+    if any(given.values()):  # 옵션을 준 값만 바꾼다
+        path = write_env({k: v for k, v in given.items() if v})
+        console.print(f"[green]저장했어요[/green]: {path}")
+        return
+
+    settings = load_settings()
+    ask = lambda text, default: typer.prompt(text, default=default)  # noqa: E731
+    console.print("[bold]사수 설정[/bold]  (Enter를 누르면 [ ] 안의 값을 씁니다)\n")
+    console.print("LLM 연결: [cyan]openai[/cyan] = OpenAI 호환 주소(사내 LLM 서버, OpenRouter 등) / "
+                  "[cyan]claude-code[/cyan] = 이 PC의 claude CLI 로그인 (개발용)")
+    default_provider = settings.llm_provider if os.environ.get("SASU_LLM_PROVIDER") else (
+        "claude-code" if claude_cli_logged_in() else "openai")
+    values = {"SASU_LLM_PROVIDER": ask("LLM 연결", default_provider).strip().lower()}
+    if values["SASU_LLM_PROVIDER"] == "openai":
+        values["SASU_LLM_BASE_URL"] = ask("  주소", settings.llm_base_url)
+        values["SASU_LLM_API_KEY"] = ask("  API 키", settings.llm_api_key or "none")
+        values["SASU_LLM_MODEL"] = ask("  모델 이름", settings.llm_model or "")
+    else:
+        values["SASU_LLM_MODEL"] = ask("  모델 (sonnet, haiku, opus)", settings.llm_model or "sonnet")
+    console.print("\n벡터 검색: [cyan]none[/cyan] = 끔 / [cyan]local[/cyan] = 이 PC에서 작은 다국어 모델(약 240MB, CPU) / "
+                  "[cyan]api[/cyan] = OpenAI 호환 /embeddings")
+    values["SASU_EMBED_PROVIDER"] = ask("벡터 검색", os.environ.get("SASU_EMBED_PROVIDER") or "none").lower()
+    values["SASU_SQL_DIALECT"] = ask("Mapper XML DB 종류", settings.sql_dialect)
+    path = write_env(values)
+    console.print(f"\n[green]저장했어요[/green]: {path}\n다음: [bold]sasu doctor[/bold]로 확인 → [bold]sasu index <프로젝트 폴더>[/bold]")
+
+
+_CHECK_MARK = {True: "[green]✓[/green]", False: "[red]✗[/red]", None: "[dim]–[/dim]"}
+
+
+@app.command()
+def doctor(ping: bool = typer.Option(False, "--ping", help="LLM에 실제로 짧은 요청을 보내 연결을 확인한다")) -> None:
+    """설치·설정 점검: 무엇이 안 되고 어떻게 고치는지 보여 준다."""
+    from sasu.setup_env import run_checks
+
+    with console.status("점검하는 중…"):
+        checks = run_checks(ping_llm=ping)
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    for c in checks:
+        table.add_row(_CHECK_MARK[c.ok], f"[bold]{c.name}[/bold]", c.detail)
+        if c.fix and c.ok is not True:
+            table.add_row("", "", f"[yellow]→ {c.fix}[/yellow]")
+    console.print(table)
+    if any(c.ok is False for c in checks):
+        raise typer.Exit(1)
+
+
 @app.command("fetch-sample")
 def fetch_sample(
     python: bool = typer.Option(False, "--python", help="Python 예제(FastAPI 풀스택 템플릿)를 받는다"),
 ) -> None:
     """분석 예제를 내려받는다 (전체 커밋 기록 포함). 기본은 전자정부 표준프레임워크 공통컴포넌트(Java)."""
-    url, target, size = SAMPLES["python" if python else "java"]
+    url, folder, size = SAMPLES["python" if python else "java"]
+    target = repos_dir() / folder
     if target.exists():
         console.print(f"이미 있어요: {target}")
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     console.print(f"내려받는 중… ({size})")
     subprocess.run(["git", "clone", url, str(target)], check=True)
-    console.print(f"[green]완료[/green]: {target}")
+    console.print(f"[green]완료[/green]: {target}\n다음: sasu index \"{target}\"")
 
 
 @app.command()
@@ -345,7 +411,7 @@ def ask(
     chosen = targets[0]
     console.print(f"\n[bold]대상[/bold] {chosen.label}  [dim]{_short(chosen.path)}:{chosen.line_start}[/dim]")
 
-    evidence = gather(conn, chosen, repo, Path("data/cache"), use_git=not no_git)
+    evidence = gather(conn, chosen, repo, cache_dir(), use_git=not no_git)
     for e in evidence:
         body = e.text
         if e.title.endswith(" 코드") and not show_code:
@@ -475,7 +541,7 @@ def eval_search(
 def eval_why(
     at: str = typer.Option(..., "--at", help="이 시점 이후의 버그 수정 커밋에서 질문을 고른다 (예: v5.0.0)"),
     n: int = typer.Option(15, "--n", help="질문 수 (질문마다 LLM을 4번 부름)"),
-    out: Path = typer.Option(Path("data/out/eval-why.json"), "--out", help="결과 JSON"),
+    out: Path = typer.Option(None, "--out", help="결과 JSON"),
 ) -> None:
     """커밋 메시지를 숨기고 "왜?"에 답하게 해, 사수(RAG)와 LLM만의 답을 채점 LLM으로 비교한다."""
     from sasu.config import load_settings
@@ -492,8 +558,9 @@ def eval_why(
         cases = pick_cases(conn, repo, at, n)
     console.print(f"질문 {len(cases)}개: 버그 수정 커밋이 넣은 줄이 지금도 남아 있는 곳")
     with console.status("답하고 채점하는 중…") as status:
-        outcomes = run(conn, repo, client, cases, Path("data/cache"),
+        outcomes = run(conn, repo, client, cases, cache_dir(),
                        progress=lambda i, total: status.update(f"답하고 채점하는 중… {i}/{total}"))
+    out = out or home() / "out" / "eval-why.json"
     save(outcomes, out)
     summary = summarize(outcomes)
     table = Table(title=f"숨긴 커밋 메시지(실제 이유)를 맞힌 정도 · 질문 {summary['질문 수']}개", title_justify="left")

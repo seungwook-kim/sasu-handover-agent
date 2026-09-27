@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from sasu import db
-from sasu.config import active_db_path, current_project, list_projects, load_settings, set_current_project
+from sasu.config import active_db_path, cache_dir, current_project, list_projects, load_settings, set_current_project
 from sasu.handover import draft_message, meta, refresh_questions, repo_of, save_answer
 from sasu.trace import TraceNode, coverage, find_urls, trace_url
 
@@ -365,7 +365,7 @@ def _choose_target(conn: sqlite3.Connection, body: AskIn):
 def _gather(conn: sqlite3.Connection, target, use_git: bool):
     from sasu.rag.evidence import gather
 
-    return gather(conn, target, repo_of(conn), Path("data/cache"), use_git=use_git)
+    return gather(conn, target, repo_of(conn), cache_dir(), use_git=use_git)
 
 
 @lru_cache(maxsize=1)

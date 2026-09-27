@@ -42,6 +42,13 @@ class LLMError(RuntimeError):
     pass
 
 
+def _headers(api_key: str) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_key and api_key.lower() != "none":
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
 class LLMClient:
     """OpenAI 호환 chat/completions. 외부 라이브러리 없이 urllib만 쓴다."""
 
@@ -53,14 +60,15 @@ class LLMClient:
 
     @property
     def available(self) -> bool:
-        return bool(self.api_key and self.model)
+        # 사내 LLM 서버는 키 없이 여는 경우가 많다. 주소와 모델만 있으면 쓴다
+        return bool(self.base_url and self.model)
 
     def chat(self, messages: list[dict]) -> str:
         body = json.dumps({"model": self.model, "messages": messages, "temperature": 0}).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
+            headers=_headers(self.api_key),
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:

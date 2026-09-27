@@ -294,8 +294,7 @@ def settle(order):
 def test_projects_keep_separate_databases(tmp_path, monkeypatch):
     from sasu import config
 
-    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
-    monkeypatch.setattr(config, "CURRENT_FILE", tmp_path / "current_project")
+    monkeypatch.setenv("SASU_HOME", str(tmp_path / "home"))
     assert config.current_project() is None
     assert config.project_name(tmp_path / "my shop!") == "my-shop"
     for name in ("egov", "shop"):
@@ -304,6 +303,7 @@ def test_projects_keep_separate_databases(tmp_path, monkeypatch):
         db.connect(path).close()
     config.set_current_project("shop")
     assert config.list_projects() == ["egov", "shop"] and config.current_project() == "shop"
+    assert config.project_db("shop") == tmp_path / "home" / "projects" / "shop.db"
 
 
 def test_session_writes_infer_model(tmp_path):

@@ -10,27 +10,33 @@
 
 ## 사용해 보기
 
-[uv](https://docs.astral.sh/uv/)가 필요합니다.
+설치는 명령 하나입니다 ([uv](https://docs.astral.sh/uv/) 필요). 인터넷이 막힌 PC용 설치 꾸러미(Python 포함)와 사내 LLM 서버 연결은 [설치 안내](docs/install.md)에 있습니다.
 
 ```bash
-uv sync
-uv run sasu fetch-sample                                   # 예제: 전자정부 표준프레임워크 공통컴포넌트
-uv run sasu index data/repos/egovframe-common-components   # 분석 (약 5초)
-uv run sasu serve                                          # 웹 화면 (브라우저가 열림)
-uv run sasu map                                            # 프로젝트 지도: 기술 스택, 모듈, 핵심 테이블
-uv run sasu map cop.bbs                                    # 모듈 하나: URL마다 읽고 쓰는 테이블
-uv run sasu trace /cop/bbs/selectArticleList.do            # URL 하나의 경로 추적
-uv run sasu common                                         # 공통 코드 사용 현황, 복사해 붙인 코드, 중복 SQL
-uv run sasu unused                                         # 끊어진 쿼리 참조, 안 쓰는 SQL·URL·메서드·JSP
-uv run sasu questions --export 인수인계질문.xlsx             # 인수인계 질문 만들기 + 엑셀 질문지
-uv run sasu answers 인수인계질문.xlsx                        # 답을 적은 질문지 가져오기
-uv run sasu embed --provider local                         # 벡터 색인 (처음 한 번, uv sync --extra local-embed. 이후 index 때 자동 갱신)
-uv run sasu ask "휴가 신청할 때 연차가 없으면 어떻게 돼?"      # RAG: 근거를 모아 "왜?"에 답하기
-uv run sasu draft Q12                                      # 떠난 개발자에게 보낼 질문 초안
-uv run sasu stats                                          # 분석 요약
-uv run sasu projects                                       # 분석한 프로젝트 목록 (*: 지금 프로젝트)
-uv run sasu use full-stack-fastapi-template                # 다른 프로젝트로 바꾸기
+uv tool install "sasu[local-embed] @ git+https://github.com/seungwook-kim/sasu-handover-agent"
+sasu setup                                             # LLM 연결·검색 방식 설정 (질문에 답하면 끝)
+sasu doctor                                            # 무엇이 되고 안 되는지 점검
 ```
+
+```bash
+sasu fetch-sample                                      # 예제: 전자정부 표준프레임워크 공통컴포넌트 (~/.sasu/repos)
+sasu index ~/.sasu/repos/egovframe-common-components   # 분석 (약 5초, 벡터 색인도 함께)
+sasu serve                                             # 웹 화면 (브라우저가 열림)
+sasu map                                               # 프로젝트 지도: 기술 스택, 모듈, 핵심 테이블
+sasu map cop.bbs                                       # 모듈 하나: URL마다 읽고 쓰는 테이블
+sasu trace /cop/bbs/selectArticleList.do               # URL 하나의 경로 추적
+sasu common                                            # 공통 코드 사용 현황, 복사해 붙인 코드, 중복 SQL
+sasu unused                                            # 끊어진 쿼리 참조, 안 쓰는 SQL·URL·메서드·JSP
+sasu questions --export 인수인계질문.xlsx                # 인수인계 질문 만들기 + 엑셀 질문지
+sasu answers 인수인계질문.xlsx                           # 답을 적은 질문지 가져오기
+sasu ask "휴가 신청할 때 연차가 없으면 어떻게 돼?"         # RAG: 근거를 모아 "왜?"에 답하기
+sasu answer Q12 "받은 답" --by 김개발                    # 떠난 뒤 연락해서 받은 답 기록
+sasu draft Q12                                         # 떠난 개발자에게 보낼 질문 초안
+sasu projects                                          # 분석한 프로젝트 목록 (*: 지금 프로젝트)
+sasu use full-stack-fastapi-template                   # 다른 프로젝트로 바꾸기
+```
+
+이 저장소에서 개발할 때는 `uv sync --extra local-embed` 뒤 `uv run sasu ...`로 실행합니다 (`.env`에 `SASU_HOME=data`).
 
 ### 웹 화면
 
@@ -48,14 +54,14 @@ uv run sasu use full-stack-fastapi-template                # 다른 프로젝트
 
 ![인수인계 질문 화면](docs/images/web-questions.jpg)
 
-분석 결과는 프로젝트마다 `data/projects/<폴더 이름>.db`에 따로 저장됩니다. 마지막으로 분석한 프로젝트가 지금 프로젝트가 되고, 인수인계 질문과 답은 다른 프로젝트를 분석해도 섞이거나 지워지지 않습니다.
+분석 결과는 프로젝트마다 `~/.sasu/projects/<폴더 이름>.db`에 따로 저장됩니다. 마지막으로 분석한 프로젝트가 지금 프로젝트가 되고, 인수인계 질문과 답은 다른 프로젝트를 분석해도 섞이거나 지워지지 않습니다.
 
 ### Python 프로젝트
 
 ```bash
-uv run sasu fetch-sample --python                          # 예제: FastAPI 풀스택 템플릿
-uv run sasu index data/repos/full-stack-fastapi-template
-uv run sasu trace "/{settings.API_V1_STR}/users/signup"
+sasu fetch-sample --python                             # 예제: FastAPI 풀스택 템플릿
+sasu index ~/.sasu/repos/full-stack-fastapi-template
+sasu trace "/{settings.API_V1_STR}/users/signup"
 ```
 
 ```
@@ -183,6 +189,6 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] 평가와 개선 (관문 3: 비교표 완성, 약한 결과도 기록)
 - [x] Python 프로젝트 지원 (FastAPI · Flask · Django), 프로젝트별 분석 파일
 - [x] 다듬기: 웹 화면, 엑셀 내보내기·가져오기
-- [ ] 설치 패키지
+- [x] 설치: `uv tool install`, 인터넷이 막힌 PC용 꾸러미(Python·모델 포함), `sasu setup`·`sasu doctor`
 - [ ] 사용 테스트
 - [ ] 확장: MCP, 기존 동작 목록

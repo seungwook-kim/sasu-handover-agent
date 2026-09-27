@@ -13,7 +13,6 @@ from pathlib import Path
 
 from sasu.rag.embeddings import Embedder
 
-CACHE_PATH = Path("data/cache/embeddings.db")
 
 
 def load_extension(conn: sqlite3.Connection) -> bool:
@@ -36,7 +35,12 @@ def _unpack(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
-def _cache(path: Path) -> sqlite3.Connection:
+def _cache(path: Path | None) -> sqlite3.Connection:
+    """임베딩 캐시는 프로젝트와 상관없이 하나 (같은 조각은 다시 임베딩하지 않는다)."""
+    if path is None:
+        from sasu.config import cache_dir
+
+        path = cache_dir() / "embeddings.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.execute(
@@ -51,7 +55,7 @@ def build_vector_index(
     conn: sqlite3.Connection,
     documents: dict[int, str],
     embedder: Embedder,
-    cache_path: Path = CACHE_PATH,
+    cache_path: Path | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> tuple[int, int]:
     """메서드 조각을 임베딩해 vec_methods에 넣는다. 돌려주는 값: (전체 조각 수, 새로 임베딩한 수)."""

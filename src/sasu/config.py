@@ -5,8 +5,29 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-PROJECTS_DIR = Path("data/projects")
-CURRENT_FILE = Path("data/current_project")
+
+
+def home() -> Path:
+    """분석 파일·캐시·설정을 두는 곳. SASU_HOME이 없으면 사용자 폴더의 .sasu.
+    어느 폴더에서 실행해도 같은 곳을 쓰게 하려는 것 (개발 중에는 .env에 SASU_HOME=data)."""
+    _load_dotenv(Path(".env"))  # SASU_HOME을 지금 폴더의 .env에 적어 둘 수 있다
+    return Path(os.environ.get("SASU_HOME") or Path.home() / ".sasu")
+
+
+def projects_dir() -> Path:
+    return home() / "projects"
+
+
+def cache_dir() -> Path:
+    return home() / "cache"
+
+
+def repos_dir() -> Path:
+    return home() / "repos"
+
+
+def _current_file() -> Path:
+    return home() / "current_project"
 
 
 def _load_dotenv(path: Path) -> None:
@@ -32,7 +53,8 @@ class Settings:
 
 
 def load_settings(env_file: Path = Path(".env")) -> Settings:
-    _load_dotenv(env_file)
+    _load_dotenv(env_file)  # 지금 폴더의 .env가 먼저
+    _load_dotenv(home() / ".env")  # 그다음 SASU_HOME의 .env (sasu setup이 만든다)
     explicit = os.environ.get("SASU_DB_PATH")
     return Settings(
         db_path=Path(explicit) if explicit else None,
@@ -51,23 +73,26 @@ def project_name(repo: Path) -> str:
 
 def project_db(name: str) -> Path:
     """프로젝트마다 분석 파일을 따로 둔다. 인수인계 질문과 답이 다른 프로젝트와 섞이지 않게 하려는 것."""
-    return PROJECTS_DIR / f"{name}.db"
+    return projects_dir() / f"{name}.db"
 
 
 def current_project() -> str | None:
-    if CURRENT_FILE.is_file():
-        name = CURRENT_FILE.read_text(encoding="utf-8").strip()
+    current = _current_file()
+    if current.is_file():
+        name = current.read_text(encoding="utf-8").strip()
         return name or None
     return None
 
 
 def set_current_project(name: str) -> None:
-    CURRENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CURRENT_FILE.write_text(name, encoding="utf-8")
+    current = _current_file()
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.write_text(name, encoding="utf-8")
 
 
 def list_projects() -> list[str]:
-    return sorted(p.stem for p in PROJECTS_DIR.glob("*.db")) if PROJECTS_DIR.is_dir() else []
+    folder = projects_dir()
+    return sorted(p.stem for p in folder.glob("*.db")) if folder.is_dir() else []
 
 
 def active_db_path() -> Path | None:

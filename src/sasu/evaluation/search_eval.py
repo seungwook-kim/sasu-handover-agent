@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sasu import db
-from sasu.config import load_settings
+from sasu.config import cache_dir, load_settings
 from sasu.evaluation.history import _git, export_snapshot, fix_commit_methods
 from sasu.indexer import index_repository
 from sasu.rag.search import MethodIndex
@@ -40,7 +40,7 @@ class SearchEvalResult:
 
 def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
                     work_dir: Path | None = None, embedder=None) -> SearchEvalResult:
-    work_dir = work_dir or Path("data/cache")
+    work_dir = work_dir or cache_dir()
     short = _git(repo, "rev-parse", "--short", rev).strip()
     snapshot = export_snapshot(repo, rev, work_dir / f"snapshot-{short}")
     conn = db.connect(work_dir / f"eval-{short}.db")

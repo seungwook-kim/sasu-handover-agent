@@ -17,6 +17,7 @@ venv/
 *.sqlite3
 data/repos/
 data/cache/
+data/models/
 data/out/
 data/projects/
 data/current_project
@@ -26,3 +27,4 @@ data/current_project
 .idea/
 .DS_Store
 Thumbs.db
+dist/
