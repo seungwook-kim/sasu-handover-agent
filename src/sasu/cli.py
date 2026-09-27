@@ -421,6 +421,41 @@ def eval_search(
         console.print(f"• {query}\n  [dim]정답 {gold} → {'순위 ' + str(rank) if rank else '10위 밖'}[/dim]")
 
 
+@app.command("eval-why")
+def eval_why(
+    at: str = typer.Option(..., "--at", help="이 시점 이후의 버그 수정 커밋에서 질문을 고른다 (예: v5.0.0)"),
+    n: int = typer.Option(15, "--n", help="질문 수 (질문마다 LLM을 4번 부름)"),
+    out: Path = typer.Option(Path("data/out/eval-why.json"), "--out", help="결과 JSON"),
+) -> None:
+    """커밋 메시지를 숨기고 "왜?"에 답하게 해, 사수(RAG)와 LLM만의 답을 채점 LLM으로 비교한다."""
+    from sasu.config import load_settings
+    from sasu.evaluation.why_eval import pick_cases, run, save, summarize
+    from sasu.rag.answer import make_llm_client
+
+    conn = _open_db()
+    repo = _repo(conn)
+    client = make_llm_client(load_settings())
+    if repo is None or not client.available:
+        console.print("[red]분석한 저장소와 LLM 설정이 필요해요 (SASU_LLM_PROVIDER 등).[/red]")
+        raise typer.Exit(1)
+    with console.status("질문 고르는 중…"):
+        cases = pick_cases(conn, repo, at, n)
+    console.print(f"질문 {len(cases)}개: 버그 수정 커밋이 넣은 줄이 지금도 남아 있는 곳")
+    with console.status("답하고 채점하는 중…") as status:
+        outcomes = run(conn, repo, client, cases, Path("data/cache"),
+                       progress=lambda i, total: status.update(f"답하고 채점하는 중… {i}/{total}"))
+    save(outcomes, out)
+    summary = summarize(outcomes)
+    table = Table(title=f"숨긴 커밋 메시지(실제 이유)를 맞힌 정도 · 질문 {summary['질문 수']}개", title_justify="left")
+    table.add_column("지표")
+    table.add_column("사수 (RAG)", justify="right")
+    table.add_column("LLM만", justify="right")
+    for key in summary["사수 (RAG)"]:
+        table.add_row(key, str(summary["사수 (RAG)"][key]), str(summary["LLM만"][key]))
+    console.print(table)
+    console.print(f"[dim]질문별 답과 채점 이유: {out}[/dim]")
+
+
 @app.command("map")
 def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 비우면 전체 지도")) -> None:
     """프로젝트 지도: 기술 스택, 모듈 구성, 여러 모듈이 함께 쓰는 핵심 테이블."""

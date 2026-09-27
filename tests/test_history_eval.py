@@ -69,6 +69,7 @@ def test_fix_pattern():
     assert FIX_PATTERN.search("로그인 오류 수정")
     assert not FIX_PATTERN.search("feat: 휴가 관리 추가")
     assert not FIX_PATTERN.search("prefix 정리")
+    assert not FIX_PATTERN.search("chore: 디버그용 System.out.println을 LOGGER로 대체")
 
 
 def test_changed_old_lines():

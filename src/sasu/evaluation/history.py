@@ -24,7 +24,8 @@ from sasu.config import load_settings
 from sasu.indexer import index_repository
 from sasu.parsers.java_parser import parse_java
 
-FIX_PATTERN = re.compile(r"^fix\b|^fix\(|버그|오류|결함|취약|hotfix|\bbug\b", re.IGNORECASE)
+# "디버그"의 "버그"는 버그 수정이 아니다 (chore: 디버그용 System.out.println을 LOGGER로 대체)
+FIX_PATTERN = re.compile(r"^fix\b|^fix\(|(?<!디)버그|오류|결함|취약|hotfix|\bbug\b", re.IGNORECASE)
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", re.MULTILINE)
 
 
