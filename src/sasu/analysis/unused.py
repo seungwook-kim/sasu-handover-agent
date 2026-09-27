@@ -138,7 +138,7 @@ def _unused_sql(conn: sqlite3.Connection, literal_blob: str) -> list[Finding]:
     ).fetchall()
     findings = []
     for r in rows:
-        short_id = r["full_id"].split(".", 1)[1]
+        short_id = r["full_id"].split(".", 1)[-1]
         if _in_text(r["full_id"], literal_blob):
             continue  # 문자열로 어딘가에서 쓰이고 있다
         evidence = _mention(r["header_comment"], short_id)
@@ -196,7 +196,7 @@ def _unused_methods(conn: sqlite3.Connection) -> list[Finding]:
         f"""SELECT m.id, m.name, m.line_start, m.line_end, m.annotations, m.body_tokens,
                    c.name AS class_name, c.superclass, c.interfaces, f.path
             FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
-            WHERE c.kind = 'class' AND c.stereotype IN ({",".join("?" * len(STEREOTYPES))})
+            WHERE c.kind IN ('class', 'module') AND c.stereotype IN ({",".join("?" * len(STEREOTYPES))})
             ORDER BY f.path, m.line_start""",
         STEREOTYPES,
     ).fetchall()
@@ -205,7 +205,9 @@ def _unused_methods(conn: sqlite3.Connection) -> list[Finding]:
         if r["id"] in called or r["name"] in config_methods:
             continue
         simple_class = r["class_name"].split(".")[-1]
-        if r["name"] == simple_class:  # 생성자
+        if r["name"] == simple_class or r["name"] == "<module>":  # 생성자, Python 모듈 최상위 코드
+            continue
+        if r["name"].startswith("__") and r["name"].endswith("__"):  # Python 특수 메서드
             continue
         annotations = set(json.loads(r["annotations"]))
         if annotations & FRAMEWORK_CALLED:

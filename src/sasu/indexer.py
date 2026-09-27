@@ -11,17 +11,23 @@ from pathlib import Path
 from sasu import db
 from sasu.linker import link
 from sasu.parsers.build_info import read_build_info
-from sasu.parsers.java_parser import parse_java
+from sasu.parsers.java_parser import JavaFile, parse_java
 from sasu.parsers.mybatis_parser import parse_mapper
+from sasu.parsers.python_parser import parse_python, route_paths
 from sasu.parsers.web_refs import extract_refs
 
 _DIALECT_SUFFIX = re.compile(r"_SQL_([A-Za-z]+)\.xml$", re.IGNORECASE)
-_SKIP_DIRS = {".git", "target", "build", "node_modules", "test"}
+_SKIP_DIRS = {
+    ".git", "target", "build", "node_modules", "test", "tests", "venv", ".venv", "env", "__pycache__",
+    "migrations", "alembic", "site-packages", "dist", ".tox", ".mypy_cache", ".pytest_cache",
+}
+_TEMPLATE_SUFFIXES = (".html", ".htm", ".jinja", ".jinja2", ".j2")
 
 
 @dataclass
 class IndexStats:
     java_files: int = 0
+    python_files: int = 0
     classes: int = 0
     methods: int = 0
     mapper_files: int = 0
@@ -35,11 +41,16 @@ def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> Inde
     repo = repo.resolve()
     stats = IndexStats()
     db.reset(conn)
+    roots = python_roots(repo)
     for path in _walk(repo):
         rel = path.relative_to(repo).as_posix()
         suffix = path.suffix.lower()
         if suffix == ".java":
             _index_java(conn, path, rel, stats)
+        elif suffix == ".py":
+            _index_python(conn, path, rel, stats, roots)
+        elif suffix in _TEMPLATE_SUFFIXES and "/templates/" in f"/{rel}":
+            _index_refs(conn, path, rel, kind="template")
         elif suffix == ".xml":
             if not _index_mapper(conn, path, rel, stats, dialect):
                 _index_refs(conn, path, rel, kind="config", methods=True)
@@ -78,20 +89,65 @@ def _dialect_matches(filename: str, dialect: str) -> bool:
 
 def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStats) -> None:
     parsed = parse_java(path.read_bytes())
-    file_id = conn.execute(
-        "INSERT INTO files (path, kind, header_comment) VALUES (?, 'java', ?)",
-        (rel, parsed.header_comment),
-    ).lastrowid
     stats.java_files += 1
+    _store_code(conn, parsed, rel, "java", None, stats)
+
+
+def _index_python(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStats, roots: list[str]) -> None:
+    module = python_module(rel, roots)
+    parsed = parse_python(path.read_bytes(), module)
+    stats.python_files += 1
+    _store_code(conn, parsed, rel, "python", module, stats)
+
+
+_PYTHON_ROOT_MARKERS = ("pyproject.toml", "setup.py", "setup.cfg", "manage.py")
+
+
+def python_roots(repo: Path) -> list[str]:
+    """pyproject.toml·setup.py·manage.py가 있는 폴더 = import가 시작되는 소스 루트 (backend/ 등). 깊은 것부터."""
+    roots = set()
+    for path in _walk(repo):
+        if path.name in _PYTHON_ROOT_MARKERS:
+            rel = path.parent.relative_to(repo).as_posix()
+            roots.add("" if rel == "." else rel)
+    return sorted(roots, key=len, reverse=True)
+
+
+def python_module(rel: str, roots: list[str] | None = None) -> str:
+    """backend/app/api/routes/users.py (루트 backend) → app.api.routes.users, pkg/__init__.py → pkg.
+    소스 루트와 맨 앞 src/는 뗀다. import 문의 경로와 맞추기 위해서다."""
+    for root in roots or []:
+        if root and rel.startswith(root + "/"):
+            rel = rel[len(root) + 1:]
+            break
+    parts = rel.removesuffix(".py").split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    if parts and parts[0] == "src":
+        parts = parts[1:]
+    return ".".join(parts)
+
+
+def _store_code(conn: sqlite3.Connection, parsed: JavaFile, rel: str, kind: str, module: str | None,
+                stats: IndexStats) -> None:
+    """Java·Python 파서가 만든 공통 모델을 저장한다."""
+    file_id = conn.execute(
+        "INSERT INTO files (path, kind, header_comment, module, imports) VALUES (?, ?, ?, ?, ?)",
+        (rel, kind, parsed.header_comment, module, json.dumps(parsed.imports)),
+    ).lastrowid
+    conn.executemany(
+        "INSERT INTO url_patterns (file_id, route, target, line, is_include) VALUES (?, ?, ?, ?, ?)",
+        [(file_id, u.route, u.target, u.line, int(u.is_include)) for u in parsed.url_patterns],
+    )
     for cls in parsed.classes:
         class_id = conn.execute(
             """INSERT INTO classes (file_id, fqcn, name, kind, stereotype, bean_name, superclass,
-                                    interfaces, mapping_paths, line_start, line_end, doc)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                    interfaces, mapping_paths, line_start, line_end, doc, table_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 file_id, cls.fqcn, cls.name, cls.kind, cls.stereotype, cls.bean_name,
                 cls.superclass, json.dumps(cls.interfaces), json.dumps(cls.mapping_paths),
-                cls.line_start, cls.line_end, cls.doc,
+                cls.line_start, cls.line_end, cls.doc, cls.table_name,
             ),
         ).lastrowid
         stats.classes += 1
@@ -100,28 +156,40 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
                 "INSERT INTO fields (class_id, name, type_name, bean_name, line, doc) VALUES (?, ?, ?, ?, ?, ?)",
                 (class_id, f.name, f.type_name, f.bean_name, f.line, f.doc),
             )
+        if kind == "python" and cls.kind == "module":
+            # 모듈 수준 router = APIRouter(prefix=...)는 URL 접두어 계산에 쓴다 (인자가 없어도 저장)
+            for f in cls.fields:
+                if f.type_name:
+                    conn.execute(
+                        "INSERT INTO meta (key, value) VALUES (?, ?)",
+                        (f"pyassign:{file_id}:{f.name}", json.dumps({"type": f.type_name, "args": f.call_args},
+                                                                    ensure_ascii=False)),
+                    )
         for m in cls.methods:
+            routes = route_paths(m) if kind == "python" else []
             method_id = conn.execute(
                 """INSERT INTO methods (class_id, name, line_start, line_end, params, doc,
-                                        complexity, returned_strings, mapping_paths, annotations,
+                                        complexity, returned_strings, mapping_paths, routes, annotations,
                                         body_hash, body_tokens)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     class_id, m.name, m.line_start, m.line_end, json.dumps(m.parameters),
                     m.doc, m.complexity, json.dumps(m.returned_strings, ensure_ascii=False),
-                    json.dumps(m.mapping_paths), json.dumps([a.name for a in m.annotations]),
-                    m.body_hash, m.body_tokens,
+                    json.dumps([] if kind == "python" else m.mapping_paths), json.dumps(routes),
+                    json.dumps([a.name for a in m.annotations]), m.body_hash, m.body_tokens,
                 ),
             ).lastrowid
             stats.methods += 1
             conn.executemany(
-                """INSERT INTO calls (method_id, receiver, callee, string_args, string_prefixes, line)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO calls (method_id, receiver, callee, string_args, string_prefixes, name_args,
+                                      keyword_args, line)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         method_id, c.receiver, c.method,
                         json.dumps(c.string_args, ensure_ascii=False),
                         json.dumps(c.string_prefixes, ensure_ascii=False),
+                        json.dumps(c.name_args), json.dumps(c.keyword_args, ensure_ascii=False),
                         c.line,
                     )
                     for c in m.calls
@@ -149,12 +217,12 @@ _MAX_REF_FILE_BYTES = 2_000_000
 
 
 def _index_refs(conn: sqlite3.Connection, path: Path, rel: str, kind: str, methods: bool = False) -> None:
-    """JSP는 항상 저장하고(뷰 연결용), 나머지는 참조가 있을 때만 저장한다."""
+    """JSP·템플릿은 항상 저장하고(화면 연결용), 나머지는 참조가 있을 때만 저장한다."""
     text = ""
     if path.stat().st_size <= _MAX_REF_FILE_BYTES:
         text = path.read_text(encoding="utf-8", errors="replace")
     refs = extract_refs(text, methods=methods) if text else []
-    if not refs and kind != "jsp":
+    if not refs and kind not in ("jsp", "template"):
         return
     file_id = conn.execute("INSERT INTO files (path, kind) VALUES (?, ?)", (rel, kind)).lastrowid
     conn.executemany(

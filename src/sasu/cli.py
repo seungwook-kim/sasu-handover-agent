@@ -11,7 +11,14 @@ from rich.table import Table
 from rich.tree import Tree
 
 from sasu import __version__, db
-from sasu.config import load_settings
+from sasu.config import (
+    current_project,
+    list_projects,
+    load_settings,
+    project_db,
+    project_name,
+    set_current_project,
+)
 from sasu.indexer import index_repository
 from sasu.trace import TraceNode, coverage, find_urls, trace_url
 
@@ -25,8 +32,12 @@ _STYLE = {
     "Repository": "yellow",
 }
 
-SAMPLE_REPO_URL = "https://github.com/eGovFramework/egovframe-common-components.git"
-SAMPLE_REPO_DIR = Path("data/repos/egovframe-common-components")
+SAMPLES = {
+    "java": ("https://github.com/eGovFramework/egovframe-common-components.git",
+             Path("data/repos/egovframe-common-components"), "약 250MB"),
+    "python": ("https://github.com/fastapi/full-stack-fastapi-template.git",
+               Path("data/repos/full-stack-fastapi-template"), "약 10MB"),
+}
 
 
 @app.command()
@@ -36,37 +47,72 @@ def version() -> None:
 
 
 @app.command("fetch-sample")
-def fetch_sample() -> None:
-    """분석 예제로 쓸 전자정부 표준프레임워크 공통컴포넌트를 내려받는다 (전체 커밋 기록 포함)."""
-    if SAMPLE_REPO_DIR.exists():
-        console.print(f"이미 있어요: {SAMPLE_REPO_DIR}")
+def fetch_sample(
+    python: bool = typer.Option(False, "--python", help="Python 예제(FastAPI 풀스택 템플릿)를 받는다"),
+) -> None:
+    """분석 예제를 내려받는다 (전체 커밋 기록 포함). 기본은 전자정부 표준프레임워크 공통컴포넌트(Java)."""
+    url, target, size = SAMPLES["python" if python else "java"]
+    if target.exists():
+        console.print(f"이미 있어요: {target}")
         return
-    SAMPLE_REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
-    console.print("내려받는 중… (약 250MB)")
-    subprocess.run(["git", "clone", SAMPLE_REPO_URL, str(SAMPLE_REPO_DIR)], check=True)
-    console.print(f"[green]완료[/green]: {SAMPLE_REPO_DIR}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    console.print(f"내려받는 중… ({size})")
+    subprocess.run(["git", "clone", url, str(target)], check=True)
+    console.print(f"[green]완료[/green]: {target}")
 
 
 @app.command()
 def index(repo: Path = typer.Argument(..., exists=True, file_okay=False, help="분석할 프로젝트 폴더")) -> None:
-    """프로젝트를 분석해 코드 그래프를 만든다."""
+    """프로젝트를 분석해 코드 그래프를 만든다. 분석 파일은 프로젝트마다 따로 둔다."""
     settings = load_settings()
+    name = project_name(repo)
+    db_path = settings.db_path or project_db(name)
     started = time.perf_counter()
     with console.status("분석 중…"):
-        conn = db.connect(settings.db_path)
+        conn = db.connect(db_path)
         stats = index_repository(conn, repo, settings.sql_dialect)
+        statements = conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0]
+    set_current_project(name)
     elapsed = time.perf_counter() - started
 
-    table = Table(title=f"분석 완료 ({elapsed:.1f}초)", show_header=False)
-    table.add_row("Java 파일", f"{stats.java_files:,}")
+    table = Table(title=f"{name} 분석 완료 ({elapsed:.1f}초)", show_header=False)
+    if stats.java_files:
+        table.add_row("Java 파일", f"{stats.java_files:,}")
+    if stats.python_files:
+        table.add_row("Python 파일", f"{stats.python_files:,}")
     table.add_row("클래스 / 메서드", f"{stats.classes:,} / {stats.methods:,}")
-    table.add_row(f"Mapper XML ({settings.sql_dialect})", f"{stats.mapper_files:,}")
-    table.add_row("SQL 쿼리", f"{stats.statements:,}")
-    table.add_row("JSP", f"{stats.jsp_files:,}")
+    if stats.mapper_files:
+        table.add_row(f"Mapper XML ({settings.sql_dialect})", f"{stats.mapper_files:,}")
+    table.add_row("SQL·ORM 쿼리", f"{statements:,}")
+    if stats.jsp_files:
+        table.add_row("JSP", f"{stats.jsp_files:,}")
     table.add_row("URL", f"{stats.urls:,}")
     table.add_row("연결", f"{stats.edges:,}")
     console.print(table)
-    console.print(f"저장 위치: {settings.db_path}")
+    console.print(f"저장 위치: {db_path} (지금 프로젝트로 설정됨)")
+
+
+@app.command()
+def projects() -> None:
+    """분석한 프로젝트 목록. *가 지금 프로젝트다."""
+    current = current_project()
+    names = list_projects()
+    if not names:
+        console.print("분석한 프로젝트가 없어요. `sasu index <폴더>`로 시작하세요.")
+        return
+    for name in names:
+        mark = "*" if name == current else " "
+        console.print(f"{mark} {name}  [dim]{project_db(name)}[/dim]")
+
+
+@app.command()
+def use(name: str = typer.Argument(..., help="프로젝트 이름 (sasu projects로 확인)")) -> None:
+    """다른 명령들이 쓸 프로젝트를 바꾼다."""
+    if name not in list_projects():
+        console.print(f"[red]'{name}' 프로젝트가 없어요. `sasu projects`로 확인하세요.[/red]")
+        raise typer.Exit(1)
+    set_current_project(name)
+    console.print(f"지금 프로젝트: {name}")
 
 
 @app.command()
@@ -135,8 +181,12 @@ def unused(
 
     report = find_unused(_open_db())
     kinds = [kind] if kind else list(_UNUSED_TITLES)
+    empty = []
     for k in kinds:
         items = getattr(report, k)
+        if not items and not kind:
+            empty.append(_UNUSED_TITLES[k].split(" (")[0])
+            continue
         shown = items if limit == 0 else items[:limit]
         table = Table(title=f"{_UNUSED_TITLES[k]}: {len(items)}건", title_justify="left", show_lines=False)
         table.add_column("이름", style="bold")
@@ -150,6 +200,8 @@ def unused(
         if len(items) > len(shown):
             console.print(f"[dim]… {len(items) - len(shown)}건 더 있음 (--limit 0)[/dim]")
         console.print()
+    if empty:
+        console.print(f"[dim]없음: {', '.join(empty)}[/dim]")
 
 
 @app.command()
@@ -486,13 +538,15 @@ def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 
             lines.append(f"부모: {b['parent']}")
         if b.get("java_version"):
             lines.append(f"Java {b['java_version']}")
+        if b.get("python_version"):
+            lines.append(f"Python {b['python_version']}")
         if b.get("servlet_api"):
             lines.append(f"Servlet API: {b['servlet_api']}")
         for category, items in b.get("stack", {}).items():
             lines.append(f"{category}: {', '.join(items)}")
         console.print("\n".join(lines))
         console.print()
-    console.print("  ".join(f"{k} [bold]{v:,}[/bold]" for k, v in ov.counts.items()))
+    console.print("  ".join(f"{k} [bold]{v:,}[/bold]" for k, v in ov.counts.items() if v or k in ("URL", "SQL")))
     console.print()
 
     table = Table(title="모듈 (URL 많은 순)", title_justify="left")
@@ -518,7 +572,9 @@ def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 
         mods = ", ".join(t.modules[:6]) + (f" 외 {len(t.modules) - 6}" if len(t.modules) > 6 else "")
         table.add_row(t.name, str(len(t.modules)), str(t.statements), crud, mods)
     console.print(table)
-    console.print("[dim]모듈 하나를 자세히: sasu map <모듈>  (예: sasu map cop.bbs)[/dim]")
+    example = next((s.name for s in ov.modules if s.urls), None)
+    if example:
+        console.print(f"[dim]모듈 하나를 자세히: sasu map <모듈>  (예: sasu map {example})[/dim]")
 
 
 @app.command()
@@ -600,10 +656,14 @@ def _undo_msys_path(arg: str) -> str:
 
 def _open_db():
     settings = load_settings()
-    if not settings.db_path.exists():
+    path = settings.db_path
+    if path is None:
+        name = current_project()
+        path = project_db(name) if name else None
+    if path is None or not path.exists():
         console.print("[red]분석 결과가 없어요. 먼저 `sasu index <프로젝트 폴더>`를 실행하세요.[/red]")
         raise typer.Exit(1)
-    return db.connect(settings.db_path)
+    return db.connect(path)
 
 
 def _meta(conn, key: str) -> str:

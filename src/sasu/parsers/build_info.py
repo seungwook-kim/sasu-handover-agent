@@ -29,9 +29,23 @@ class BuildInfo:
     java_version: str | None
     stack: dict[str, list[str]] = field(default_factory=dict)  # 분류 → artifactId 목록
     servlet_api: str | None = None  # jakarta, javax
+    python_version: str | None = None  # requires-python
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+# Python: (분류, 패키지 이름에 들어 있으면 해당하는 조각)
+_PY_CATEGORIES = [
+    ("프레임워크", ("django", "flask", "fastapi", "starlette", "sanic", "tornado", "aiohttp")),
+    ("데이터 접근", ("sqlalchemy", "sqlmodel", "alembic", "peewee", "tortoise", "django-", "psycopg", "asyncpg")),
+    ("DB 드라이버", ("psycopg", "asyncpg", "pymysql", "mysqlclient", "oracledb", "cx-oracle", "cx_oracle", "pymssql", "aiomysql")),
+    ("화면", ("jinja2", "django-templates", "mako")),
+    ("검증", ("pydantic", "marshmallow", "cerberus")),
+    ("보안", ("passlib", "bcrypt", "pyjwt", "python-jose", "authlib", "cryptography")),
+    ("배치·스케줄", ("celery", "apscheduler", "rq", "dramatiq")),
+    ("기타 라이브러리", ("requests", "httpx", "pandas", "numpy", "redis", "boto3")),
+]
 
 
 def read_build_info(repo: Path) -> BuildInfo | None:
@@ -42,7 +56,55 @@ def read_build_info(repo: Path) -> BuildInfo | None:
         gradle = repo / name
         if gradle.is_file():
             return _from_gradle(gradle)
+    return _from_python(repo)
+
+
+def _from_python(repo: Path) -> BuildInfo | None:
+    """pyproject.toml(한 단계 아래 폴더까지) 또는 requirements*.txt."""
+    import tomllib
+
+    candidates = [repo / "pyproject.toml", *sorted(repo.glob("*/pyproject.toml"))]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        project = data.get("project", {})
+        poetry = data.get("tool", {}).get("poetry", {})
+        deps = list(project.get("dependencies", [])) + list(poetry.get("dependencies", {}).keys())
+        for group in project.get("optional-dependencies", {}).values():
+            deps.extend(group)
+        names = [_package_name(d) for d in deps]
+        python = project.get("requires-python") or poetry.get("dependencies", {}).get("python")
+        return BuildInfo(
+            tool="python (pyproject.toml)", project=project.get("name") or poetry.get("name") or repo.name,
+            version=project.get("version") or poetry.get("version"), packaging=None, parent=None,
+            java_version=None, stack=_categorize_py(names),
+            servlet_api=None, python_version=python if isinstance(python, str) else None,
+        )
+    requirements = sorted(repo.glob("requirements*.txt")) + sorted(repo.glob("*/requirements*.txt"))
+    if requirements:
+        names = []
+        for req in requirements:
+            for line in req.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.split("#")[0].strip()
+                if line and not line.startswith("-"):
+                    names.append(_package_name(line))
+        return BuildInfo(tool="python (requirements.txt)", project=repo.name, version=None, packaging=None,
+                         parent=None, java_version=None, stack=_categorize_py(names))
     return None
+
+
+def _package_name(spec: str) -> str:
+    return re.split(r"[<>=!~\[;\s@]", spec.strip(), maxsplit=1)[0].lower()
+
+
+def _categorize_py(names: list[str]) -> dict[str, list[str]]:
+    stack: dict[str, list[str]] = {}
+    for category, needles in _PY_CATEGORIES:
+        hits = sorted({n for n in names if any(n == needle or n.startswith(needle) for needle in needles)})
+        if hits:
+            stack[category] = hits
+    return stack
 
 
 def _from_pom(path: Path) -> BuildInfo:

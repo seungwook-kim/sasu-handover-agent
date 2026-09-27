@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-# 이유를 설명하지 않는 커밋: 포맷 정리, 릴리스·버전 일괄 반영, 첫 커밋
+# 이유를 설명하지 않는 커밋: 포맷 정리, 릴리스·버전 일괄 반영, 첫 커밋, 봇 커밋(작성자가 ...[bot])
 NOISE_COMMIT = re.compile(
     r"format|포맷|정렬|들여쓰기|indent|whitespace|공백|cleanup|코드\s*정리|이클립스|eclipse"
     r"|initial commit|^\s*v?\d+(\.\d+)+\s*(beta|alpha|rc\d*|final)?\s*$"
-    r"|\d+\.\d+\.\d+\s*(final|release|beta)?\s*$|릴리스|release\s*\d",
+    r"|\d+\.\d+\.\d+\s*(final|release|beta)?\s*$|릴리스|release\s*\d|release notes|changelog",
     re.IGNORECASE,
 )
 
@@ -40,11 +40,15 @@ def ignore_revs_file(repo: Path, cache_dir: Path) -> Path | None:
         head = _git(repo, "rev-parse", "HEAD").strip()
     except subprocess.CalledProcessError:
         return None
-    path = cache_dir / f"ignore-revs-{head[:12]}.txt"
+    path = cache_dir / f"ignore-revs-v2-{head[:12]}.txt"
     if path.exists():
         return path
-    log = _git(repo, "log", "--format=%H%x09%s")
-    noise = [line.split("\t", 1)[0] for line in log.splitlines() if "\t" in line and NOISE_COMMIT.search(line.split("\t", 1)[1])]
+    log = _git(repo, "log", "--format=%H%x09%an%x09%s")
+    noise = []
+    for line in log.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3 and _is_noise(parts[1], parts[2]):
+            noise.append(parts[0])
     cache_dir.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(noise) + "\n", encoding="utf-8")
     return path
@@ -80,9 +84,13 @@ def blame_notes(repo: Path, file_path: str, start: int, end: int, cache_dir: Pat
         CommitNote(sha=s[:8], date=info[s].get("date", ""), author=info[s].get("author", ""),
                    summary=info[s].get("summary", ""), lines=n)
         for s, n in counts.most_common()
-        if not NOISE_COMMIT.search(info[s].get("summary", ""))
+        if not _is_noise(info[s].get("author", ""), info[s].get("summary", ""))
     ]
     return notes[:limit]
+
+
+def _is_noise(author: str, summary: str) -> bool:
+    return author.endswith("[bot]") or bool(NOISE_COMMIT.search(summary))
 
 
 def _git(repo: Path, *args: str) -> str:

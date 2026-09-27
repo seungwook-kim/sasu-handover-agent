@@ -1,5 +1,8 @@
 """tree-sitter로 Java 소스를 읽어 클래스·필드·메서드·호출 정보를 뽑는다.
 
+여기 정의한 데이터 클래스(JavaClass, JavaMethod …)는 Python 파서도 같이 쓰는 언어 공통 모델이다.
+이름은 Java에서 시작했지만 색인·연결·분석은 언어와 상관없이 이 모델만 본다.
+
 SI 프로젝트(Spring MVC + MyBatis)에서 계층을 잇는 데 필요한 정보만 뽑는다.
 - 클래스 애노테이션: @Controller, @Service("빈이름"), @Repository("빈이름"), @RequestMapping
 - 필드 주입: @Resource(name="빈이름"), @Autowired + @Qualifier
@@ -57,6 +60,8 @@ class JavaField:
     annotations: list[Annotation]
     line: int
     doc: str | None = None  # /** 게시물 아이디 */ 같은 필드 주석 (한국어 ↔ 식별자 용어 사전 재료)
+    # Python: router = APIRouter(prefix="/users") 처럼 호출로 만든 값의 인자 (키 → 문자열 값들)
+    call_args: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def bean_name(self) -> str | None:
@@ -78,6 +83,10 @@ class Call:
     # "LoginUsr.updateLoginIncorrect" + userSe 처럼 문자열로 시작하는 더하기 인자의 앞부분.
     # 실행 때 결정되는 동적 쿼리 ID를 찾는 데 쓴다.
     string_prefixes: list[str] = field(default_factory=list)
+    # 이름 그대로 넘긴 인자 (Python ORM: db.query(User) → User, include_router(users.router) → users.router)
+    name_args: list[str] = field(default_factory=list)
+    # 키워드 인자 원문 (Python: include_router(x, prefix="/api") → {"prefix": "/api"})
+    keyword_args: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -141,6 +150,9 @@ class JavaClass:
     fields: list[JavaField]
     methods: list[JavaMethod]
     doc: str | None
+    # Python처럼 애노테이션이 없는 언어는 파일·클래스 이름으로 계층을 정해 넣는다
+    explicit_stereotype: str | None = None
+    table_name: str | None = None  # ORM 모델이 매핑하는 테이블
 
     @property
     def fqcn(self) -> str:
@@ -151,6 +163,8 @@ class JavaClass:
 
     @property
     def stereotype(self) -> str | None:
+        if self.explicit_stereotype:
+            return self.explicit_stereotype
         for name in ("Controller", "RestController", "Service", "Repository", "Component"):
             if self.annotation(name):
                 return name
@@ -160,7 +174,7 @@ class JavaClass:
     def bean_name(self) -> str | None:
         """@Service("이름") 같은 명시적 빈 이름. 없으면 Spring 기본 규칙(첫 글자 소문자)."""
         stereotype = self.stereotype
-        if stereotype is None:
+        if stereotype is None or self.explicit_stereotype:
             return None
         explicit = self.annotation(stereotype).first()
         if explicit:
@@ -174,11 +188,23 @@ class JavaClass:
 
 
 @dataclass
+class UrlPattern:
+    """Django urls.py의 path("posts/", views.post_list) 한 줄."""
+
+    route: str
+    target: str  # views.post_list, PostView.as_view, include("app.urls")
+    line: int
+    is_include: bool = False
+
+
+@dataclass
 class JavaFile:
     package: str
     imports: list[str]
     header_comment: str | None  # package 선언 앞의 주석 (수정 이력이 있는 경우가 많음)
     classes: list[JavaClass]
+    language: str = "java"
+    url_patterns: list[UrlPattern] = field(default_factory=list)
 
 
 def parse_java(source: bytes) -> JavaFile:

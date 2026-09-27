@@ -12,6 +12,10 @@ dependencies = [
     "rich>=13",
     "openpyxl>=3.1.5",
     "sqlite-vec>=0.1.9",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.32",
+    "tree-sitter-python>=0.23",
 ]
 
 [project.scripts]
@@ -24,6 +28,7 @@ local-embed = [
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=8",
 ]
 

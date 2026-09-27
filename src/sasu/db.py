@@ -10,8 +10,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,      -- 분석 대상 저장소 기준 상대 경로 (/ 구분)
-    kind TEXT NOT NULL,             -- java, mapper, jsp
-    header_comment TEXT
+    kind TEXT NOT NULL,             -- java, python, mapper, jsp, template, config, web
+    header_comment TEXT,
+    module TEXT,                    -- Python 모듈 경로 (app.api.routes.users)
+    imports TEXT                    -- JSON 배열. Python: "full.path as alias"
 );
 
 CREATE TABLE IF NOT EXISTS classes (
@@ -19,7 +21,7 @@ CREATE TABLE IF NOT EXISTS classes (
     file_id INTEGER NOT NULL REFERENCES files(id),
     fqcn TEXT NOT NULL,
     name TEXT NOT NULL,             -- 중첩 클래스는 Outer.Inner
-    kind TEXT NOT NULL,             -- class, interface, enum
+    kind TEXT NOT NULL,             -- class, interface, enum, module(Python 모듈의 최상위 함수 묶음)
     stereotype TEXT,                -- Controller, Service, Repository, Component
     bean_name TEXT,
     superclass TEXT,
@@ -27,7 +29,8 @@ CREATE TABLE IF NOT EXISTS classes (
     mapping_paths TEXT NOT NULL,    -- JSON 배열. 클래스 수준 @RequestMapping (URL 접두어)
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
-    doc TEXT
+    doc TEXT,
+    table_name TEXT                 -- ORM 모델이 매핑하는 테이블 (Python)
 );
 CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
 CREATE INDEX IF NOT EXISTS idx_classes_bean ON classes(bean_name);
@@ -53,6 +56,7 @@ CREATE TABLE IF NOT EXISTS methods (
     complexity INTEGER NOT NULL,
     returned_strings TEXT NOT NULL, -- JSON 배열
     mapping_paths TEXT NOT NULL,    -- JSON 배열. 메서드 수준 URL 매핑
+    routes TEXT NOT NULL DEFAULT '[]', -- JSON 배열 [경로, 데코레이터 객체]. Python @router.get("/x")
     annotations TEXT NOT NULL,      -- JSON 배열. 애노테이션 이름
     body_hash TEXT,                 -- 식별자·리터럴을 지운 본문 토큰의 해시 (중복 코드 찾기)
     body_tokens INTEGER NOT NULL    -- 본문 토큰 수
@@ -67,7 +71,18 @@ CREATE TABLE IF NOT EXISTS calls (
     callee TEXT NOT NULL,
     string_args TEXT NOT NULL,      -- JSON 배열
     string_prefixes TEXT NOT NULL,  -- JSON 배열. "문자열" + 변수 인자의 앞부분 (동적 쿼리 ID)
+    name_args TEXT NOT NULL DEFAULT '[]',    -- JSON 배열. 이름으로 넘긴 인자 (User, users.router)
+    keyword_args TEXT NOT NULL DEFAULT '{}', -- JSON 객체. 키워드 인자 원문 (prefix="/api")
     line INTEGER NOT NULL
+);
+
+-- Django urls.py의 path("posts/", views.post_list)
+CREATE TABLE IF NOT EXISTS url_patterns (
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    route TEXT NOT NULL,
+    target TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    is_include INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS empty_catches (
@@ -176,7 +191,7 @@ PRESERVED_TABLES = {"questions"}
 
 
 # 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -190,7 +205,8 @@ def connect(path: Path) -> sqlite3.Connection:
             conn.execute("DROP TABLE IF EXISTS vec_methods")
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
         for table in tables:
-            if table not in PRESERVED_TABLES:
+            # sqlite_*는 SQLite 내부 테이블, vec_methods_*는 벡터 색인을 지울 때 함께 사라지는 보조 테이블
+            if table not in PRESERVED_TABLES and not table.startswith(("sqlite_", "vec_methods")):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -210,7 +226,7 @@ def reset(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS vec_methods")
     conn.execute("DELETE FROM meta WHERE key = 'embed_model'")
     tables = [
-        "condition_literals", "notes",
+        "condition_literals", "notes", "url_patterns",
         "refs", "edges", "statement_tables", "statements", "url_mappings", "string_literals",
         "empty_catches", "calls", "methods", "fields", "classes", "files", "meta",
     ]

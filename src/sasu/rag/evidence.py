@@ -99,9 +99,9 @@ def gather(conn: sqlite3.Connection, target: Target, repo: Path | None, cache_di
     if calls:
         add(FACT, "이 메서드가 부르는 코드와 SQL", calls)
 
-    # 4. 사람이 남긴 설명: Javadoc, 주의 주석, 파일 머리말 수정 이력
+    # 4. 사람이 남긴 설명: Javadoc·docstring, 주의 주석, 파일 머리말 수정 이력
     if method["doc"]:
-        add(RECORD, "Javadoc", _clean_comment(method["doc"]), loc)
+        add(RECORD, "docstring" if target.path.endswith(".py") else "Javadoc", _clean_comment(method["doc"]), loc)
     for n in conn.execute("SELECT tag, text, line FROM notes WHERE method_id = ?", (target.method_id,)):
         add(RECORD, f"{n['tag']} 주석", n["text"], f"{target.path}:{n['line']}")
     header = conn.execute("SELECT header_comment FROM files WHERE path = ?", (target.path,)).fetchone()
@@ -203,10 +203,11 @@ def _mapper_history(conn: sqlite3.Connection, method_id: int, depth: int = 3) ->
     for r in conn.execute(
         f"""SELECT DISTINCT s.full_id, f.path, f.header_comment FROM edges e JOIN statements s ON s.id = e.dst_id
             JOIN files f ON f.id = s.file_id
-            WHERE e.src_kind = 'method' AND e.src_id IN ({placeholders}) AND e.dst_kind = 'statement'""",
+            WHERE e.src_kind = 'method' AND e.src_id IN ({placeholders}) AND e.dst_kind = 'statement'
+              AND f.kind = 'mapper'""",
         list(methods),
     ):
-        short = r["full_id"].split(".", 1)[1]
+        short = r["full_id"].split(".", 1)[-1]
         lines = _history_lines(r["header_comment"], short)
         if lines:
             result.append((r["path"], f"{r['full_id']}: {lines}"))

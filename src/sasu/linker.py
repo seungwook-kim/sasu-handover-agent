@@ -48,6 +48,12 @@ def link(conn: sqlite3.Connection) -> LinkStats:
         fields_by_class[f["class_id"]][f["name"]] = f
 
     statements = {r["full_id"]: r["id"] for r in conn.execute("SELECT id, full_id FROM statements")}
+    # Python 파일의 클래스는 아래 Python 규칙(linker_python)으로 잇는다
+    python_classes = {
+        r["id"] for r in conn.execute(
+            "SELECT c.id FROM classes c JOIN files f ON f.id = c.file_id WHERE f.kind = 'python'"
+        )
+    }
     jsp_files = {
         r["path"].split(VIEW_PREFIX, 1)[1]: r["id"]
         for r in conn.execute("SELECT id, path FROM files WHERE kind = 'jsp'")
@@ -103,6 +109,8 @@ def link(conn: sqlite3.Connection) -> LinkStats:
     for call in conn.execute("SELECT * FROM calls"):
         caller = call["method_id"]
         class_id = methods[caller]["class_id"]
+        if class_id in python_classes:
+            continue
         line = call["line"]
         for arg in json.loads(call["string_args"]):
             if arg in statements:
@@ -164,7 +172,7 @@ def link(conn: sqlite3.Connection) -> LinkStats:
 
     # 3. 뷰와 이동 URL
     for mid, m in methods.items():
-        if classes[m["class_id"]]["stereotype"] not in ("Controller", "RestController"):
+        if m["class_id"] in python_classes or classes[m["class_id"]]["stereotype"] not in ("Controller", "RestController"):
             continue
         for value in json.loads(m["returned_strings"]):
             if value.startswith(("redirect:", "forward:")):
@@ -174,6 +182,11 @@ def link(conn: sqlite3.Connection) -> LinkStats:
             elif value and "/" in value:
                 view = value.lstrip("/") + VIEW_SUFFIX
                 edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None, None))
+
+    # 4. Python: 라우터 접두어·include, import·self·이름 추정 호출, ORM·SQL, 템플릿
+    from sasu.linker_python import link_python  # linker_python이 normalize_url을 가져가므로 여기서 import
+
+    stats.urls += link_python(conn, edges, classes, methods, methods_by_class, fields_by_class, name_map)
 
     conn.executemany(
         """INSERT INTO edges (src_kind, src_id, dst_kind, dst_id, dst_name, line, note)

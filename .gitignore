@@ -18,6 +18,8 @@ venv/
 data/repos/
 data/cache/
 data/out/
+data/projects/
+data/current_project
 
 # 에디터, OS
 .vscode/

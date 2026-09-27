@@ -2,7 +2,9 @@
 
 떠나는 개발자에게 무엇을 물어야 할지 코드 분석으로 먼저 찾아 주는 SI 인수인계 에이전트입니다. 받은 답변을 코드 위치에 연결해 두고, 신규 투입자의 "왜?"에 근거와 함께 답합니다.
 
-> **상태: 개발 중.** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답의 검색·근거 수집까지 동작합니다. LLM 답변 생성은 코드가 준비돼 있고 API 키를 넣으면 동작합니다.
+**Java(Spring · MyBatis · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
+
+> **상태: 개발 중.** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답까지 동작합니다. 다음은 웹 화면입니다.
 
 ## 사용해 보기
 
@@ -23,7 +25,42 @@ uv run sasu embed --provider local                         # 벡터 색인 (처�
 uv run sasu ask "휴가 신청할 때 연차가 없으면 어떻게 돼?"      # RAG: 근거를 모아 "왜?"에 답하기
 uv run sasu draft Q12                                      # 떠난 개발자에게 보낼 질문 초안
 uv run sasu stats                                          # 분석 요약
+uv run sasu projects                                       # 분석한 프로젝트 목록 (*: 지금 프로젝트)
+uv run sasu use full-stack-fastapi-template                # 다른 프로젝트로 바꾸기
 ```
+
+분석 결과는 프로젝트마다 `data/projects/<폴더 이름>.db`에 따로 저장됩니다. 마지막으로 분석한 프로젝트가 지금 프로젝트가 되고, 인수인계 질문과 답은 다른 프로젝트를 분석해도 섞이거나 지워지지 않습니다.
+
+### Python 프로젝트
+
+```bash
+uv run sasu fetch-sample --python                          # 예제: FastAPI 풀스택 템플릿
+uv run sasu index data/repos/full-stack-fastapi-template
+uv run sasu trace "/{settings.API_V1_STR}/users/signup"
+```
+
+```
+URL /{settings.API_V1_STR}/users/signup
+└── users.register_user  backend/app/api/routes/users.py:147
+    ├── crud.get_user_by_email  backend/app/crud.py:34
+    │   └── SELECT ORM User  backend/app/models.py:52
+    │       테이블 USER
+    └── crud.create_user  backend/app/crud.py:10
+        ├── security.get_password_hash  backend/app/core/security.py:35
+        └── INSERT ORM User  backend/app/models.py:52  모델 추정
+            테이블 USER
+```
+
+| 대상 | 읽는 것 |
+| --- | --- |
+| URL | FastAPI `@router.get`와 `include_router(prefix=...)`, Flask `@bp.route`와 `register_blueprint(url_prefix=...)`, Django `urlpatterns`·`include()`·클래스 뷰(`get`/`post`...) |
+| 호출 | import 별칭·상대 import, `self.repo = Repo()` 같은 주입, 모듈 함수(`crud.get_user`). 확실하지 않으면 프로젝트에 하나뿐인 이름으로 잇고 "이름으로 추정"이라고 표시 |
+| DB | Django ORM(`Post.objects.filter`), SQLAlchemy·SQLModel(`select(User)`, `session.get`, `session.add(obj)`), 코드 안의 SQL 문자열 → 테이블 (`__tablename__`, `Meta.db_table`, Django 기본 `앱_모델`) |
+| 화면 | `render_template`, `render`, `TemplateResponse`의 템플릿 파일 |
+| 질문 | TODO·주의 주석, 드문 값 분기(`status == "partial_refund"`처럼 Python은 소문자 코드 값도), 복잡한 분기, 복사한 코드 |
+| 용어 | 모델 필드의 `verbose_name`·`description`·`comment`를 검색 용어집으로 |
+
+소스 루트(`pyproject.toml`·`manage.py`가 있는 폴더, `src/`)를 찾아 import 경로와 파일을 맞춥니다. `tests`·`migrations`·가상환경 폴더는 건너뜁니다.
 
 ### "왜?" 질의응답 (RAG)
 
@@ -95,7 +132,7 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 
 | 역할 | 도구 |
 | --- | --- |
-| 코드 분석 | tree-sitter (Java), MyBatis XML 파서 |
+| 코드 분석 | tree-sitter (Java, Python), MyBatis XML 파서 |
 | 산출물 파싱 | openpyxl, python-pptx |
 | 저장 | SQLite + sqlite-vec (벡터 색인) |
 | 검색 | BM25(한국어 글자 2-gram) + 벡터 + 코드 그래프 전파 |
@@ -123,8 +160,9 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] 기반 그래프: Java + MyBatis 연결 (관문 1: 정답 메모의 흐름이 그대로 나옴 → [검증 기록](docs/gate1-verification.md))
 - [x] 보조 기능: 지도, 공통화, 불필요한 소스 → [검증 기록](docs/gate3-verification.md)
 - [x] 질문 생성 → [과거 기록 평가](docs/gate4-evaluation.md)
-- [ ] 답변 연결 + "왜?" 질의응답 (관문 2: 폴더 하나로 질문 → 답 입력 → "왜?" 답변까지)
-- [ ] 평가와 개선 (관문 3: 비교표 완성, 약한 결과도 기록)
+- [x] 답변 연결 + "왜?" 질의응답 (관문 2: 폴더 하나로 질문 → 답 입력 → "왜?" 답변까지) → [RAG 구조와 평가](docs/rag.md)
+- [x] 평가와 개선 (관문 3: 비교표 완성, 약한 결과도 기록)
+- [x] Python 프로젝트 지원 (FastAPI · Flask · Django), 프로젝트별 분석 파일
 - [ ] 다듬기: 웹 UI, 설치 패키지, 엑셀 내보내기
 - [ ] 사용 테스트
 - [ ] 확장: MCP, 기존 동작 목록

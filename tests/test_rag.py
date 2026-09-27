@@ -230,3 +230,11 @@ def test_answer_sends_evidence_and_validates():
 def test_answer_without_llm_returns_evidence_only():
     result = answer("연차가 없으면?", "X.y", EVIDENCE, None)
     assert result.mode == "evidence_only" and result.sentences == []
+
+
+def test_bot_commits_are_noise():
+    from sasu.githistory import _is_noise
+
+    assert _is_noise("latest-changes[bot]", "📝 Update release notes")
+    assert _is_noise("dependabot[bot]", "Bump fastapi from 0.110 to 0.111")
+    assert not _is_noise("홍길동", "fix: 휴가 신청 오류")

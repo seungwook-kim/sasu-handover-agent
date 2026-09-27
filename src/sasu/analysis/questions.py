@@ -20,11 +20,40 @@ from sasu.analysis.unused import find_unused
 _TRIVIAL_VALUES = {
     "", "0", "1", "-1", "2", "Y", "N", "y", "n", "true", "false", "null", "/", ".", ",", " ",
     "GET", "POST", "PUT", "DELETE", "UTF-8", "utf-8",
+    "get", "post", "put", "delete", "patch", "none", "id", "name", "type", "value", "data", "default",
 }
 # 이 값을 조건에 쓰는 메서드가 이보다 많으면 공통 규칙으로 보고 묻지 않는다
 _RARE_VALUE_MAX_METHODS = 3
 # 업무 코드처럼 생긴 값: USR03, NCRD, R3, 02, 9999, A-01, 한글 단어
 _BUSINESS_CODE = re.compile(r"^(?:[A-Z]{1,8}[-_]?\d{0,4}|\d{2,6}|[A-Z]\d{1,4}|[가-힣]{1,10})$")
+# Python은 코드 값을 소문자로 쓰는 일이 많다 (status == "pending"). Java·SI 코드는 대문자가 관례라 Python만 본다
+_LOWER_CODE = re.compile(r"^[a-z][a-z0-9_]{1,19}$")
+# 소문자여도 뜻이 뻔한 일반 단어
+_COMMON_WORDS = {
+    "http", "https", "insert", "update", "select", "detail", "list", "session", "password", "popup", "up",
+    "down", "class", "method", "json", "xml", "html", "text", "file", "user", "admin", "test", "debug",
+    "true", "false", "yes", "no", "on", "off", "asc", "desc", "all", "create", "read", "remove", "save",
+}
+
+
+
+def _python_code(value: str, lang: str, source: str) -> bool:
+    return (lang == "python" and bool(_LOWER_CODE.match(value)) and value not in _COMMON_WORDS
+            and _compared_as_code(value, source))
+
+
+def _compared_as_code(value: str, source: str) -> bool:
+    """조건에서 이 값이 같은지 비교에 쓰였나. x in ("a", "b")는 비교지만
+    "password" in data(키 검사)나 name.startswith("a")는 아니다."""
+    q = rf"[\"']{re.escape(value)}[\"']"
+    return bool(
+        re.search(rf"{q}\s*[!=]=|[!=]=\s*{q}", source)
+        or re.search(rf"\bin\s*[(\[{{][^)\]}}]*{q}", source)
+        or re.search(rf"{q}\s*\.equals|\.equals(?:IgnoreCase)?\(\s*{q}", source)
+        or re.match(r"case\b", source)
+    )
+
+
 # 이름만 봐도 뜻을 아는 값: 16진수, 경로·URL·MIME, 클래스 이름, 기호
 _SELF_EXPLANATORY = re.compile(r"^(?:0x[0-9A-Fa-f]+|.*[/\\].*|[A-Z][a-z]+(?:[A-Z][a-z]+)+|[^\w가-힣]+|unknown|null)$")
 # Controller·Service·DAO의 규칙이 유틸보다 인수인계에서 중요하다
@@ -160,11 +189,18 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
     for r in conn.execute("SELECT value, COUNT(DISTINCT method_id) AS n FROM condition_literals GROUP BY value"):
         value_methods[r["value"]] = r["n"]
     per_method: dict[int, list[sqlite3.Row]] = defaultdict(list)
-    for r in conn.execute("SELECT method_id, value, line, source FROM condition_literals ORDER BY line"):
+    for r in conn.execute(
+        """SELECT cl.method_id, cl.value, cl.line, cl.source, f.kind AS lang
+           FROM condition_literals cl JOIN methods m ON m.id = cl.method_id
+           JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+           ORDER BY cl.line"""
+    ):
         v = r["value"].strip("'\"")
         if v in _TRIVIAL_VALUES or value_methods[r["value"]] > _RARE_VALUE_MAX_METHODS or len(v) > 40:
             continue
-        if _SELF_EXPLANATORY.match(v) or not _BUSINESS_CODE.match(v):
+        if _SELF_EXPLANATORY.match(v):
+            continue
+        if not (_BUSINESS_CODE.match(v) or _python_code(v, r["lang"], r["source"])):
             continue
         per_method[r["method_id"]].append(r)
     for mid, rows in per_method.items():
