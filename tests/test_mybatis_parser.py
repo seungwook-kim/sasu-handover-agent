@@ -56,5 +56,13 @@ def test_comma_joined_tables_and_dual():
     assert extract_tables(sql) == ["COMTNA", "COMTNB"]
 
 
+def test_subquery_columns_are_not_tables():
+    sql = (
+        "SELECT * FROM ( SELECT rownum rn, TB.* FROM ( SELECT a.NTT_ID, a.NTT_SJ "
+        "FROM COMTNBBS a LEFT OUTER JOIN COMVNUSERMASTER b ON a.X = b.X ) TB )"
+    )
+    assert extract_tables(sql) == ["COMTNBBS", "COMVNUSERMASTER"]
+
+
 def test_not_a_mapper():
     assert parse_mapper("<beans></beans>") is None

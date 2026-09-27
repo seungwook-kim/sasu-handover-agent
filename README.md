@@ -2,7 +2,35 @@
 
 떠나는 개발자에게 무엇을 물어야 할지 코드 분석으로 먼저 찾아 주는 SI 인수인계 에이전트입니다. 받은 답변을 코드 위치에 연결해 두고, 신규 투입자의 "왜?"에 근거와 함께 답합니다.
 
-> **상태: 기획 완료, 개발 시작 전.** 아래 기능은 목표이며, 구현되는 대로 이 문서를 갱신합니다.
+> **상태: 개발 중.** 코드 분석 그래프(URL → SQL → 테이블 추적)까지 동작합니다. 질문 생성과 "왜?" 답변은 아직입니다.
+
+## 사용해 보기
+
+[uv](https://docs.astral.sh/uv/)가 필요합니다.
+
+```bash
+uv sync
+uv run sasu fetch-sample                                   # 예제: 전자정부 표준프레임워크 공통컴포넌트
+uv run sasu index data/repos/egovframe-common-components   # 분석 (약 2초)
+uv run sasu trace /cop/bbs/selectArticleList.do            # URL 하나의 경로 추적
+uv run sasu stats                                          # 분석 요약
+```
+
+`trace` 결과 예시:
+
+```
+URL /cop/bbs/selectArticleList.do
+└── EgovArticleController.selectArticleList  egovframework/com/cop/bbs/web/EgovArticleController.java:149
+    ├── EgovArticleServiceImpl.selectArticleList  egovframework/com/cop/bbs/service/impl/EgovArticleServiceImpl.java:57
+    │   ├── EgovArticleDAO.selectArticleList  egovframework/com/cop/bbs/service/impl/EgovArticleDAO.java:15
+    │   │   └── SELECT BBSArticle.selectArticleList  egovframework/mapper/com/cop/bbs/EgovArticle_SQL_oracle.xml:213
+    │   │       테이블 COMTNBBS, COMVNUSERMASTER, COMTNCOMMENT
+    │   └── ...
+    ├── → /uat/uia/egovLoginUsr.do  (이동)
+    └── 화면 WEB-INF/jsp/egovframework/com/cop/bbs/EgovArticleList.jsp
+```
+
+eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(12.1%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(4.7%)입니다.
 
 ## 왜 만드나
 

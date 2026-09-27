@@ -79,6 +79,9 @@ def extract_tables(sql: str) -> list[str]:
     for m in _TABLE_REF.finditer(sql):
         found.append(m.group(1))
     for m in _FROM_LIST.finditer(sql):
+        # FROM ( SELECT a.X, a.Y ... ) 처럼 서브쿼리면 쉼표 뒤가 테이블이 아니라 컬럼이다
+        if m.group(1).lstrip().startswith("("):
+            continue
         for part in m.group(1).split(",")[1:]:
             token = part.strip().split()
             if token and re.fullmatch(r"[A-Za-z_][\w$#]*(?:\.[A-Za-z_][\w$#]*)?", token[0]):
