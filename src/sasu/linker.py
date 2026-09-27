@@ -150,6 +150,18 @@ def link(conn: sqlite3.Connection) -> LinkStats:
                     f"{f['type_name']}.{call['callee']}", line, f"빈 '{f['bean_name']}' (저장소 밖)",
                 ))
 
+    # 2-1. String queryId = "Ns.id"; selectOne(queryId) 처럼 변수를 거쳐 부르는 쿼리.
+    #      DAO(@Repository) 메서드 안의 문자열 리터럴이 쿼리 ID와 같으면 잇는다.
+    for lit in conn.execute(
+        """SELECT s.method_id, s.value, s.line FROM string_literals s
+           JOIN methods m ON m.id = s.method_id JOIN classes c ON c.id = m.class_id
+           WHERE c.stereotype = 'Repository'"""
+    ):
+        if lit["value"] in statements:
+            key_prefix = ("method", lit["method_id"], "statement", statements[lit["value"]], None)
+            if not any(e[:5] == key_prefix for e in edges):
+                edges.add((*key_prefix, lit["line"], None))
+
     # 3. 뷰와 이동 URL
     for mid, m in methods.items():
         if classes[m["class_id"]]["stereotype"] not in ("Controller", "RestController"):

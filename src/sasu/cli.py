@@ -116,6 +116,42 @@ def stats() -> None:
     console.print(table)
 
 
+_UNUSED_TITLES = {
+    "broken_sql": "끊어진 쿼리 참조 (코드가 부르는데 Mapper에 없음)",
+    "sql": "부르는 곳이 없는 SQL",
+    "url": "부르는 화면을 못 찾은 URL",
+    "method": "부르는 곳이 없는 메서드 (Service·DAO·Component)",
+    "jsp": "쓰이지 않는 JSP",
+}
+
+
+@app.command()
+def unused(
+    kind: str = typer.Option(None, "--kind", help="broken_sql, sql, url, method, jsp 중 하나만 보기"),
+    limit: int = typer.Option(15, "--limit", help="종류별로 보여 줄 개수 (0이면 전부)"),
+) -> None:
+    """부르는 곳이 없거나 연결이 끊어진 SQL·URL·메서드·JSP를 찾는다."""
+    from sasu.analysis.unused import find_unused
+
+    report = find_unused(_open_db())
+    kinds = [kind] if kind else list(_UNUSED_TITLES)
+    for k in kinds:
+        items = getattr(report, k)
+        shown = items if limit == 0 else items[:limit]
+        table = Table(title=f"{_UNUSED_TITLES[k]}: {len(items)}건", title_justify="left", show_lines=False)
+        table.add_column("이름", style="bold")
+        table.add_column("위치", style="dim")
+        table.add_column("확신")
+        table.add_column("설명")
+        for f in shown:
+            reason = f.reason + (f"\n[yellow]{f.evidence}[/yellow]" if f.evidence else "")
+            table.add_row(f.name, _short(f.location), f.confidence, reason)
+        console.print(table)
+        if len(items) > len(shown):
+            console.print(f"[dim]… {len(items) - len(shown)}건 더 있음 (--limit 0)[/dim]")
+        console.print()
+
+
 def _short(location: str | None) -> str:
     """표준 Maven 경로 접두어는 줄여서 보여 준다."""
     if not location:

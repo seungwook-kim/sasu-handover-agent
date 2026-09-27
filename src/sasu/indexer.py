@@ -12,6 +12,7 @@ from sasu import db
 from sasu.linker import link
 from sasu.parsers.java_parser import parse_java
 from sasu.parsers.mybatis_parser import parse_mapper
+from sasu.parsers.web_refs import extract_refs
 
 _DIALECT_SUFFIX = re.compile(r"_SQL_([A-Za-z]+)\.xml$", re.IGNORECASE)
 _SKIP_DIRS = {".git", "target", "build", "node_modules", "test"}
@@ -38,11 +39,16 @@ def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> Inde
         suffix = path.suffix.lower()
         if suffix == ".java":
             _index_java(conn, path, rel, stats)
-        elif suffix == ".xml" and _dialect_matches(path.name, dialect):
-            _index_mapper(conn, path, rel, stats)
+        elif suffix == ".xml":
+            if not _index_mapper(conn, path, rel, stats, dialect):
+                _index_refs(conn, path, rel, kind="config", methods=True)
         elif suffix == ".jsp":
-            conn.execute("INSERT INTO files (path, kind) VALUES (?, 'jsp')", (rel,))
+            _index_refs(conn, path, rel, kind="jsp")
             stats.jsp_files += 1
+        elif suffix in (".js", ".html", ".htm"):
+            _index_refs(conn, path, rel, kind="web")
+        elif suffix == ".properties":
+            _index_refs(conn, path, rel, kind="config", methods=True)
 
     link_stats = link(conn)
     stats.urls = link_stats.urls
@@ -96,12 +102,14 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
         for m in cls.methods:
             method_id = conn.execute(
                 """INSERT INTO methods (class_id, name, line_start, line_end, params, doc,
-                                        complexity, returned_strings, mapping_paths)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        complexity, returned_strings, mapping_paths, annotations,
+                                        body_hash, body_tokens)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     class_id, m.name, m.line_start, m.line_end, json.dumps(m.parameters),
                     m.doc, m.complexity, json.dumps(m.returned_strings, ensure_ascii=False),
-                    json.dumps(m.mapping_paths),
+                    json.dumps(m.mapping_paths), json.dumps([a.name for a in m.annotations]),
+                    m.body_hash, m.body_tokens,
                 ),
             ).lastrowid
             stats.methods += 1
@@ -128,28 +136,54 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
             )
 
 
-def _index_mapper(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStats) -> None:
+_MAX_REF_FILE_BYTES = 2_000_000
+
+
+def _index_refs(conn: sqlite3.Connection, path: Path, rel: str, kind: str, methods: bool = False) -> None:
+    """JSP는 항상 저장하고(뷰 연결용), 나머지는 참조가 있을 때만 저장한다."""
+    text = ""
+    if path.stat().st_size <= _MAX_REF_FILE_BYTES:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    refs = extract_refs(text, methods=methods) if text else []
+    if not refs and kind != "jsp":
+        return
+    file_id = conn.execute("INSERT INTO files (path, kind) VALUES (?, ?)", (rel, kind)).lastrowid
+    conn.executemany(
+        "INSERT INTO refs (file_id, kind, value, line) VALUES (?, ?, ?, ?)",
+        [(file_id, r.kind, r.value, r.line) for r in refs],
+    )
+
+
+def _index_mapper(
+    conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStats, dialect: str
+) -> bool:
+    """Mapper XML이면 저장하고 True. 다른 DB용 Mapper도 True(건너뜀). Mapper가 아니면 False."""
     text = path.read_text(encoding="utf-8", errors="replace")
     if "<mapper" not in text:
-        return
+        return False
+    if not _dialect_matches(path.name, dialect):
+        return True
     parsed = parse_mapper(text)
     if parsed is None:
-        return
+        return False
     file_id = conn.execute(
         "INSERT INTO files (path, kind, header_comment) VALUES (?, 'mapper', ?)",
         (rel, parsed.header_comment),
     ).lastrowid
     stats.mapper_files += 1
     for s in parsed.statements:
+        # MyBatis 규칙: id가 이미 "네임스페이스."로 시작하면 네임스페이스를 다시 붙이지 않는다
+        full_id = s.id if s.id.startswith(parsed.namespace + ".") else f"{parsed.namespace}.{s.id}"
         stmt_id = conn.execute(
             "INSERT INTO statements (file_id, full_id, kind, line, sql) VALUES (?, ?, ?, ?, ?)",
-            (file_id, f"{parsed.namespace}.{s.id}", s.kind, s.line, s.sql),
+            (file_id, full_id, s.kind, s.line, s.sql),
         ).lastrowid
         conn.executemany(
             "INSERT INTO statement_tables (statement_id, table_name) VALUES (?, ?)",
             [(stmt_id, t) for t in s.tables],
         )
         stats.statements += 1
+    return True
 
 
 def _write_meta(conn: sqlite3.Connection, repo: Path, dialect: str) -> None:

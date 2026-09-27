@@ -51,8 +51,12 @@ CREATE TABLE IF NOT EXISTS methods (
     doc TEXT,
     complexity INTEGER NOT NULL,
     returned_strings TEXT NOT NULL, -- JSON 배열
-    mapping_paths TEXT NOT NULL     -- JSON 배열. 메서드 수준 URL 매핑
+    mapping_paths TEXT NOT NULL,    -- JSON 배열. 메서드 수준 URL 매핑
+    annotations TEXT NOT NULL,      -- JSON 배열. 애노테이션 이름
+    body_hash TEXT,                 -- 식별자·리터럴을 지운 본문 토큰의 해시 (중복 코드 찾기)
+    body_tokens INTEGER NOT NULL    -- 본문 토큰 수
 );
+CREATE INDEX IF NOT EXISTS idx_methods_hash ON methods(body_hash);
 CREATE INDEX IF NOT EXISTS idx_methods_class ON methods(class_id, name);
 
 CREATE TABLE IF NOT EXISTS calls (
@@ -114,6 +118,15 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_kind, src_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_kind, dst_id);
 
+-- JSP·JS·설정 파일이 가리키는 URL, JSP, include, 메서드 이름
+CREATE TABLE IF NOT EXISTS refs (
+    file_id INTEGER NOT NULL REFERENCES files(id),
+    kind TEXT NOT NULL,             -- url, jsp, include, method
+    value TEXT NOT NULL,
+    line INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_refs ON refs(kind, value);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -122,7 +135,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 
 # 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -142,7 +155,7 @@ def connect(path: Path) -> sqlite3.Connection:
 def reset(conn: sqlite3.Connection) -> None:
     """다시 색인하기 전에 이전 분석 결과를 지운다."""
     tables = [
-        "edges", "statement_tables", "statements", "url_mappings", "string_literals",
+        "refs", "edges", "statement_tables", "statements", "url_mappings", "string_literals",
         "empty_catches", "calls", "methods", "fields", "classes", "files", "meta",
     ]
     for table in tables:

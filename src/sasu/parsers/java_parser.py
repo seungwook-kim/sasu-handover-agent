@@ -7,6 +7,7 @@ SI 프로젝트(Spring MVC + MyBatis)에서 계층을 잇는 데 필요한 정�
 - 위험 신호 재료: 복잡도, 비어 있는 catch 블록
 """
 
+import hashlib
 from dataclasses import dataclass, field
 
 import tree_sitter_java as tsjava
@@ -96,6 +97,9 @@ class JavaMethod:
     complexity: int = 1
     empty_catches: list[EmptyCatch] = field(default_factory=list)
     string_literals: list[tuple[str, int]] = field(default_factory=list)
+    # 식별자·리터럴을 지운 본문 토큰의 해시. 변수 이름만 다른 복사-붙여넣기 코드를 찾는 데 쓴다.
+    body_hash: str | None = None
+    body_tokens: int = 0
 
     @property
     def mapping_paths(self) -> list[str]:
@@ -272,7 +276,38 @@ def _parse_method(node: Node, source: bytes) -> JavaMethod:
     body = node.child_by_field_name("body")
     if body is not None:
         _scan_body(body, source, method)
+        tokens = _normalized_tokens(body, source)
+        method.body_tokens = len(tokens)
+        method.body_hash = hashlib.sha1(" ".join(tokens).encode()).hexdigest()
     return method
+
+
+_IDENTIFIER_NODES = {"identifier", "type_identifier", "field_identifier"}
+_LITERAL_NODES = {
+    "string_literal", "decimal_integer_literal", "hex_integer_literal", "decimal_floating_point_literal",
+    "character_literal", "true", "false", "null_literal",
+}
+
+
+def _normalized_tokens(node: Node, source: bytes) -> list[str]:
+    """본문을 토큰으로 펼치되 식별자는 ID, 리터럴은 LIT로 바꾼다. 주석은 뺀다.
+
+    변수·메서드 이름만 바꿔 복사한 코드(Type-2 클론)가 같은 토큰열이 된다.
+    """
+    tokens: list[str] = []
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type in ("line_comment", "block_comment"):
+            continue
+        if n.type in _LITERAL_NODES:
+            tokens.append("LIT")
+            continue
+        if n.child_count == 0:
+            tokens.append("ID" if n.type in _IDENTIFIER_NODES else n.type)
+            continue
+        stack.extend(reversed(n.children))
+    return tokens
 
 
 def _scan_body(body: Node, source: bytes, method: JavaMethod) -> None:
