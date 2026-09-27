@@ -152,6 +152,41 @@ def unused(
         console.print()
 
 
+@app.command()
+def common(top: int = typer.Option(10, "--top", help="항목별로 보여 줄 개수")) -> None:
+    """여러 모듈이 함께 쓰는 공통 코드, 복사해 붙인 코드, 중복 SQL을 보여 준다."""
+    from sasu.analysis.common import analyze_common, clone_stats
+
+    conn = _open_db()
+    report = analyze_common(conn, top=top)
+
+    table = Table(title="여러 모듈이 함께 쓰는 공통 코드", title_justify="left")
+    table.add_column("클래스", style="bold")
+    table.add_column("모듈")
+    table.add_column("종류")
+    table.add_column("쓰는 모듈 수", justify="right")
+    table.add_column("호출 수", justify="right")
+    for s in report.shared:
+        table.add_row(s.class_name, s.module, s.stereotype or "유틸", str(len(s.used_by_modules)), f"{s.call_sites:,}")
+    console.print(table)
+
+    groups, methods = clone_stats(conn)
+    console.print(f"\n[bold]복사해 붙인 메서드[/bold]: {groups}묶음, {methods}개 메서드 (변수 이름만 다르고 구조가 같은 코드)")
+    for i, g in enumerate(report.clones, 1):
+        head = f"{i}. {len(g.methods)}곳, 토큰 {g.tokens}개"
+        if g.note:
+            head += f"  [yellow]{g.note}[/yellow]"
+        console.print(head)
+        for name, loc in g.methods[:4]:
+            console.print(f"   {name}  [dim]{_short(loc)}[/dim]")
+        if len(g.methods) > 4:
+            console.print(f"   [dim]… 외 {len(g.methods) - 4}곳[/dim]")
+
+    console.print(f"\n[bold]같은 SQL이 다른 ID로[/bold]: {len(report.duplicate_sql)}묶음")
+    for d in report.duplicate_sql:
+        console.print(f"  [magenta]{', '.join(s[0] for s in d.statements)}[/magenta]\n  [dim]{d.sql_preview}[/dim]")
+
+
 def _short(location: str | None) -> str:
     """표준 Maven 경로 접두어는 줄여서 보여 준다."""
     if not location:
