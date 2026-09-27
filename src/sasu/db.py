@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS calls (
     receiver TEXT,
     callee TEXT NOT NULL,
     string_args TEXT NOT NULL,      -- JSON 배열
+    string_prefixes TEXT NOT NULL,  -- JSON 배열. "문자열" + 변수 인자의 앞부분 (동적 쿼리 ID)
     line INTEGER NOT NULL
 );
 
@@ -100,14 +101,15 @@ CREATE TABLE IF NOT EXISTS statement_tables (
 );
 CREATE INDEX IF NOT EXISTS idx_statement_tables ON statement_tables(table_name);
 
--- 해석이 끝난 연결. src/dst 종류: method, statement, view, url
+-- 해석이 끝난 연결. dst 종류: method, statement, view, url, external(저장소 밖 빈)
 CREATE TABLE IF NOT EXISTS edges (
     src_kind TEXT NOT NULL,
     src_id INTEGER NOT NULL,
     dst_kind TEXT NOT NULL,
-    dst_id INTEGER,                 -- view·url은 NULL
-    dst_name TEXT,                  -- view 경로, url
-    line INTEGER
+    dst_id INTEGER,                 -- view·url·external은 NULL일 수 있음
+    dst_name TEXT,                  -- view 경로, url, 외부 빈 호출
+    line INTEGER,
+    note TEXT                       -- 동적 쿼리 ID, 외부 빈 이름 등 보충 설명
 );
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_kind, src_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_kind, dst_id);
@@ -119,10 +121,19 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+# 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).
+SCHEMA_VERSION = 2
+
+
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        for table in tables:
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     return conn

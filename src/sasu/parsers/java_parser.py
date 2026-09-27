@@ -72,6 +72,9 @@ class Call:
     method: str
     string_args: list[str]
     line: int
+    # "LoginUsr.updateLoginIncorrect" + userSe 처럼 문자열로 시작하는 더하기 인자의 앞부분.
+    # 실행 때 결정되는 동적 쿼리 ID를 찾는 데 쓴다.
+    string_prefixes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -286,16 +289,18 @@ def _scan_body(body: Node, source: bytes, method: JavaMethod) -> None:
         if t == "method_invocation":
             obj = n.child_by_field_name("object")
             args = n.child_by_field_name("arguments")
+            arg_nodes = args.named_children if args is not None else []
             method.calls.append(
                 Call(
                     receiver=_text(obj, source) if obj is not None else None,
                     method=_text(n.child_by_field_name("name"), source),
-                    string_args=[
-                        _string_value(a, source)
-                        for a in (args.named_children if args is not None else [])
-                        if a.type == "string_literal"
-                    ],
+                    string_args=[_string_value(a, source) for a in arg_nodes if a.type == "string_literal"],
                     line=n.start_point.row + 1,
+                    string_prefixes=[
+                        prefix
+                        for a in arg_nodes
+                        if a.type == "binary_expression" and (prefix := _leading_string(a, source))
+                    ],
                 )
             )
         elif t == "return_statement":
@@ -380,6 +385,17 @@ def _type_name(node: Node, source: bytes) -> str:
 
 def _simple_name(node: Node | None, source: bytes) -> str:
     return _text(node, source).split(".")[-1] if node is not None else ""
+
+
+def _leading_string(node: Node, source: bytes) -> str | None:
+    """"A" + x + "B" 에서 맨 앞 문자열 "A"를 돌려준다. 문자열로 시작하지 않으면 None."""
+    if node.type == "string_literal":
+        return _string_value(node, source)
+    if node.type == "binary_expression":
+        op = node.child_by_field_name("operator")
+        if op is not None and op.type == "+":
+            return _leading_string(node.child_by_field_name("left"), source)
+    return None
 
 
 def _string_value(node: Node, source: bytes) -> str:

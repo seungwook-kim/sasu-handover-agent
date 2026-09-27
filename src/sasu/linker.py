@@ -103,23 +103,52 @@ def link(conn: sqlite3.Connection) -> LinkStats:
     for call in conn.execute("SELECT * FROM calls"):
         caller = call["method_id"]
         class_id = methods[caller]["class_id"]
+        line = call["line"]
         for arg in json.loads(call["string_args"]):
             if arg in statements:
-                edges.add(("method", caller, "statement", statements[arg], None, call["line"]))
+                edges.add(("method", caller, "statement", statements[arg], None, line, None))
+        # "LoginUsr.updateLoginIncorrect" + userSe → 이 접두어로 시작하는 쿼리 전부
+        for prefix in json.loads(call["string_prefixes"]):
+            if "." not in prefix:
+                continue
+            for full_id, sid in statements.items():
+                if full_id.startswith(prefix) and full_id != prefix:
+                    edges.add(("method", caller, "statement", sid, None, line, f"동적 ID: \"{prefix}\" + …"))
 
         receiver = call["receiver"]
+        field_name = None
         if receiver in (None, "this", "super"):
             targets = with_superclasses(class_id)
-        elif receiver.startswith("this.") and receiver.count(".") == 1:
-            targets = resolve_field(class_id, receiver.removeprefix("this."))
+        elif receiver.startswith("this.") and receiver.removeprefix("this.") in fields_by_class[class_id]:
+            field_name = receiver.removeprefix("this.")
+            targets = resolve_field(class_id, field_name)
         elif receiver.isidentifier():
-            targets = resolve_field(class_id, receiver)
+            if receiver in fields_by_class[class_id]:
+                field_name = receiver
+                targets = resolve_field(class_id, receiver)
+            elif receiver[:1].isupper():
+                # EgovUserDetailsHelper.getAuthenticatedUser() 같은 static 유틸 호출
+                targets = [c for c in name_map.get(receiver, []) if classes[c]["kind"] != "interface"]
+            else:
+                targets = []
         else:
             targets = []
+
+        linked = False
         for target_class in targets:
             for callee in methods_by_class[target_class].get(call["callee"], []):
                 if callee != caller:
-                    edges.add(("method", caller, "method", callee, None, call["line"]))
+                    edges.add(("method", caller, "method", callee, None, line, None))
+                    linked = True
+
+        # 주입받은 빈인데 저장소 안에서 구현을 못 찾음 → 프레임워크나 XML 설정에만 있는 빈
+        if not linked and field_name is not None:
+            f = fields_by_class[class_id][field_name]
+            if f["bean_name"]:
+                edges.add((
+                    "method", caller, "external", None,
+                    f"{f['type_name']}.{call['callee']}", line, f"빈 '{f['bean_name']}' (저장소 밖)",
+                ))
 
     # 3. 뷰와 이동 URL
     for mid, m in methods.items():
@@ -129,13 +158,14 @@ def link(conn: sqlite3.Connection) -> LinkStats:
             if value.startswith(("redirect:", "forward:")):
                 target = value.split(":", 1)[1].split("?")[0]
                 if target.startswith("/"):
-                    edges.add(("method", mid, "url", None, normalize_url(target), None))
+                    edges.add(("method", mid, "url", None, normalize_url(target), None, None))
             elif value and "/" in value:
                 view = value.lstrip("/") + VIEW_SUFFIX
-                edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None))
+                edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None, None))
 
     conn.executemany(
-        "INSERT INTO edges (src_kind, src_id, dst_kind, dst_id, dst_name, line) VALUES (?, ?, ?, ?, ?, ?)",
+        """INSERT INTO edges (src_kind, src_id, dst_kind, dst_id, dst_name, line, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         sorted(edges, key=lambda e: (e[1], e[5] or 0, e[2], e[3] or 0, e[4] or "")),
     )
     stats.edges = len(edges)

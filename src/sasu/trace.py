@@ -10,12 +10,14 @@ MAX_DEPTH = 8
 
 @dataclass
 class TraceNode:
-    kind: str  # url, method, statement, view
+    kind: str  # url, method, statement, view, external
     label: str
     location: str | None = None  # 파일:줄
     detail: str | None = None  # 테이블 목록 등
     children: list["TraceNode"] = field(default_factory=list)
     repeated: bool = False  # 이미 위에서 펼친 노드
+    note: str | None = None  # 동적 쿼리 ID, 저장소 밖 빈 등
+    count: int = 1  # 같은 부모에서 같은 대상을 여러 번 부른 횟수
 
     def walk(self):
         yield self
@@ -35,15 +37,17 @@ def find_urls(conn: sqlite3.Connection, query: str) -> list[str]:
     return [r["url"] for r in rows]
 
 
-def trace_url(conn: sqlite3.Connection, url: str) -> TraceNode:
+def trace_url(conn: sqlite3.Connection, url: str, full: bool = False) -> TraceNode:
+    """full=False면 스테레오타입(Controller·Service·Repository·Component) 클래스만 펼치고,
+    유틸 클래스(EgovProperties 등)는 한 줄로만 보여 준다. 흐름을 읽기 쉽게 하려는 것."""
     root = TraceNode(kind="url", label=url)
     seen: set[tuple[str, int]] = set()
     for row in conn.execute("SELECT method_id FROM url_mappings WHERE url = ?", (url,)):
-        root.children.append(_method_node(conn, row["method_id"], seen, depth=1))
+        root.children.append(_method_node(conn, row["method_id"], seen, depth=1, full=full))
     return root
 
 
-def _method_node(conn: sqlite3.Connection, method_id: int, seen: set, depth: int) -> TraceNode:
+def _method_node(conn: sqlite3.Connection, method_id: int, seen: set, depth: int, full: bool) -> TraceNode:
     m = conn.execute(
         """SELECT m.name, m.line_start, c.name AS class_name, c.stereotype, f.path
            FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
@@ -63,6 +67,8 @@ def _method_node(conn: sqlite3.Connection, method_id: int, seen: set, depth: int
     seen.add(key)
     if depth >= MAX_DEPTH:
         return node
+    # 유틸 클래스는 한 줄로 끝낸다. 단, 유틸이 직접 SQL을 부르면 그건 보여 준다.
+    expand_calls = full or depth == 1 or m["stereotype"] is not None
 
     for e in conn.execute(
         # 코드 호출을 줄 순서대로 먼저, 화면과 이동 URL은 마지막에
@@ -70,21 +76,39 @@ def _method_node(conn: sqlite3.Connection, method_id: int, seen: set, depth: int
         "ORDER BY line IS NULL, line, dst_kind",
         (method_id,),
     ).fetchall():
-        if e["dst_kind"] == "method":
-            node.children.append(_method_node(conn, e["dst_id"], seen, depth + 1))
-        elif e["dst_kind"] == "statement":
-            node.children.append(_statement_node(conn, e["dst_id"]))
-        elif e["dst_kind"] == "view":
-            node.children.append(
-                TraceNode(
-                    kind="view",
-                    label=e["dst_name"],
-                    detail=None if e["dst_id"] else "파일 없음",
-                )
-            )
-        elif e["dst_kind"] == "url":
-            node.children.append(TraceNode(kind="url", label=e["dst_name"], detail="이동"))
+        kind = e["dst_kind"]
+        if kind != "statement" and not expand_calls:
+            continue
+        if kind == "method":
+            # 오버로드된 같은 이름의 메서드도 한 줄로 합친다
+            name = _method_label(conn, e["dst_id"])
+            existing = next((c for c in node.children if c.kind == "method" and c.label == name), None)
+            if existing is not None:
+                existing.count += 1
+                continue
+            child = _method_node(conn, e["dst_id"], seen, depth + 1, full)
+        elif kind == "statement":
+            child = _statement_node(conn, e["dst_id"])
+            child.note = e["note"]
+        elif kind == "view":
+            child = TraceNode(kind="view", label=e["dst_name"], detail=None if e["dst_id"] else "파일 없음")
+        elif kind == "url":
+            child = TraceNode(kind="url", label=e["dst_name"], detail="이동")
+        else:
+            child = TraceNode(kind="external", label=e["dst_name"], note=e["note"])
+        if kind != "method" and any(c.kind == kind and c.label == child.label for c in node.children):
+            next(c for c in node.children if c.kind == kind and c.label == child.label).count += 1
+            continue
+        node.children.append(child)
     return node
+
+
+def _method_label(conn: sqlite3.Connection, method_id: int) -> str:
+    row = conn.execute(
+        "SELECT c.name AS class_name, m.name FROM methods m JOIN classes c ON c.id = m.class_id WHERE m.id = ?",
+        (method_id,),
+    ).fetchone()
+    return f"{row['class_name']}.{row['name']}"
 
 
 def _statement_node(conn: sqlite3.Connection, statement_id: int) -> TraceNode:
@@ -117,7 +141,7 @@ class Coverage:
 def coverage(conn: sqlite3.Connection) -> Coverage:
     result = Coverage()
     for row in conn.execute("SELECT DISTINCT url FROM url_mappings").fetchall():
-        nodes = list(trace_url(conn, row["url"]).walk())
+        nodes = list(trace_url(conn, row["url"], full=True).walk())
         result.total += 1
         if any(n.kind == "statement" for n in nodes):
             result.to_sql += 1

@@ -70,7 +70,10 @@ def index(repo: Path = typer.Argument(..., exists=True, file_okay=False, help="�
 
 
 @app.command()
-def trace(url: str = typer.Argument(..., help="URL 전체 또는 일부 (예: /cop/bbs/selectArticleList.do)")) -> None:
+def trace(
+    url: str = typer.Argument(..., help="URL 전체 또는 일부 (예: /cop/bbs/selectArticleList.do)"),
+    full: bool = typer.Option(False, "--full", help="유틸 클래스 내부 호출까지 모두 펼친다"),
+) -> None:
     """URL 하나가 어떤 코드와 SQL, 테이블을 거치는지 따라간다."""
     url = _undo_msys_path(url)
     conn = _open_db()
@@ -83,7 +86,7 @@ def trace(url: str = typer.Argument(..., help="URL 전체 또는 일부 (예: /c
         for u in urls[:30]:
             console.print(f"  {u}")
         raise typer.Exit(1)
-    root = trace_url(conn, urls[0])
+    root = trace_url(conn, urls[0], full=full)
     tree = Tree(f"[bold]URL[/bold] {root.label}")
     for child in root.children:
         _render(tree, child)
@@ -135,8 +138,15 @@ def _render(parent: Tree, node: TraceNode) -> None:
         )
     elif node.kind == "view":
         text = f"[blue]화면[/blue] {node.label}" + (f"  [red]({node.detail})[/red]" if node.detail else "")
+    elif node.kind == "external":
+        text = f"[dim]{node.label}[/dim]  [yellow]{node.note}[/yellow]"
     else:
         text = f"[blue]→ {node.label}[/blue]  [dim]({node.detail})[/dim]"
+    if node.kind == "statement" and node.note:
+        text = text.replace("\n", f"  [yellow]{node.note}[/yellow]\n", 1)
+    if node.count > 1:
+        first, sep, rest = text.partition("\n")
+        text = f"{first}  [dim]×{node.count}[/dim]{sep}{rest}"
     branch = parent.add(text)
     for child in node.children:
         _render(branch, child)

@@ -106,9 +106,15 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
             ).lastrowid
             stats.methods += 1
             conn.executemany(
-                "INSERT INTO calls (method_id, receiver, callee, string_args, line) VALUES (?, ?, ?, ?, ?)",
+                """INSERT INTO calls (method_id, receiver, callee, string_args, string_prefixes, line)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 [
-                    (method_id, c.receiver, c.method, json.dumps(c.string_args, ensure_ascii=False), c.line)
+                    (
+                        method_id, c.receiver, c.method,
+                        json.dumps(c.string_args, ensure_ascii=False),
+                        json.dumps(c.string_prefixes, ensure_ascii=False),
+                        c.line,
+                    )
                     for c in m.calls
                 ],
             )

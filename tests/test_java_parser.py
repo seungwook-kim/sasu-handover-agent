@@ -103,6 +103,20 @@ def test_dao_string_argument():
     assert call.string_args == ["BBSArticle.selectArticleList"]
 
 
+def test_dynamic_string_prefix():
+    src = b'''class LoginDAO {
+        void update(Map map) {
+            update("LoginUsr.updateLoginIncorrect" + map.get("USER_SE") + "X", map);
+            log(prefix + "not a literal start");
+        }
+    }'''
+    calls = parse_java(src).classes[0].methods[0].calls
+    by_name = {c.method: c for c in calls}
+    assert by_name["update"].string_prefixes == ["LoginUsr.updateLoginIncorrect"]
+    assert by_name["update"].string_args == []
+    assert by_name["log"].string_prefixes == []
+
+
 def test_default_bean_name_and_interfaces():
     cls = parse_java(SERVICE).classes[0]
     assert cls.bean_name == "egovArticleServiceImpl"
