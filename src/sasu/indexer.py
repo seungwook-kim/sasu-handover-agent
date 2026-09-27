@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sasu import db
 from sasu.linker import link
+from sasu.parsers.build_info import read_build_info
 from sasu.parsers.java_parser import parse_java
 from sasu.parsers.mybatis_parser import parse_mapper
 from sasu.parsers.web_refs import extract_refs
@@ -194,10 +195,12 @@ def _write_meta(conn: sqlite3.Connection, repo: Path, dialect: str) -> None:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         pass
+    build = read_build_info(repo)
     values = {
         "repo_path": str(repo),
         "repo_head": head,
         "sql_dialect": dialect,
         "indexed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "build_info": json.dumps(build.to_dict() if build else None, ensure_ascii=False),
     }
     conn.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", values.items())

@@ -152,6 +152,71 @@ def unused(
         console.print()
 
 
+@app.command("map")
+def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 비우면 전체 지도")) -> None:
+    """프로젝트 지도: 기술 스택, 모듈 구성, 여러 모듈이 함께 쓰는 핵심 테이블."""
+    from sasu.analysis.overview import build_overview, module_urls
+
+    conn = _open_db()
+    if module:
+        rows = module_urls(conn, module)
+        if not rows:
+            console.print(f"[red]'{module}' 모듈의 URL이 없어요. `sasu map`으로 모듈 이름을 확인하세요.[/red]")
+            raise typer.Exit(1)
+        table = Table(title=f"{module} 모듈: URL {len(rows)}개", title_justify="left")
+        table.add_column("URL", style="bold")
+        table.add_column("처리 메서드", style="cyan")
+        table.add_column("읽는 테이블")
+        table.add_column("쓰는 테이블", style="yellow")
+        for r in rows:
+            reads = [t for t in r.tables if t not in r.writes]
+            table.add_row(r.url, r.handler, ", ".join(reads) or "-", ", ".join(r.writes) or "-")
+        console.print(table)
+        return
+
+    ov = build_overview(conn)
+    if ov.build:
+        b = ov.build
+        lines = [f"[bold]{b['project']}[/bold] {b.get('version') or ''} ({b['tool']}, {b.get('packaging') or '-'})"]
+        if b.get("parent"):
+            lines.append(f"부모: {b['parent']}")
+        if b.get("java_version"):
+            lines.append(f"Java {b['java_version']}")
+        if b.get("servlet_api"):
+            lines.append(f"Servlet API: {b['servlet_api']}")
+        for category, items in b.get("stack", {}).items():
+            lines.append(f"{category}: {', '.join(items)}")
+        console.print("\n".join(lines))
+        console.print()
+    console.print("  ".join(f"{k} [bold]{v:,}[/bold]" for k, v in ov.counts.items()))
+    console.print()
+
+    table = Table(title="모듈 (URL 많은 순)", title_justify="left")
+    for col in ("모듈", "URL", "컨트롤러", "서비스", "DAO", "SQL"):
+        table.add_column(col, justify="right" if col != "모듈" else "left")
+    table.add_column("주요 테이블")
+    for s in ov.modules:
+        if s.urls == 0 and s.statements == 0:
+            continue
+        top = ", ".join(t for t, _ in s.tables.most_common(3))
+        table.add_row(s.name, str(s.urls), str(s.controllers), str(s.services), str(s.daos), str(s.statements), top)
+    console.print(table)
+
+    table = Table(title="여러 모듈이 함께 쓰는 테이블 (바꾸면 영향이 큼)", title_justify="left")
+    table.add_column("테이블", style="bold")
+    table.add_column("모듈 수", justify="right")
+    table.add_column("SQL 수", justify="right")
+    table.add_column("조회/등록/수정/삭제")
+    table.add_column("쓰는 모듈", style="dim")
+    for t in ov.tables:
+        k = t.kinds
+        crud = f"{k.get('select', 0)}/{k.get('insert', 0)}/{k.get('update', 0)}/{k.get('delete', 0)}"
+        mods = ", ".join(t.modules[:6]) + (f" 외 {len(t.modules) - 6}" if len(t.modules) > 6 else "")
+        table.add_row(t.name, str(len(t.modules)), str(t.statements), crud, mods)
+    console.print(table)
+    console.print("[dim]모듈 하나를 자세히: sasu map <모듈>  (예: sasu map cop.bbs)[/dim]")
+
+
 @app.command()
 def common(top: int = typer.Option(10, "--top", help="항목별로 보여 줄 개수")) -> None:
     """여러 모듈이 함께 쓰는 공통 코드, 복사해 붙인 코드, 중복 SQL을 보여 준다."""
