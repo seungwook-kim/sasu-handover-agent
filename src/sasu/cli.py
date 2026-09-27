@@ -256,7 +256,7 @@ def ask(
 ) -> None:
     """코드·SQL·인수인계 답변·커밋 기록을 근거로 "왜?"에 답한다. 모든 문장에 근거와 등급을 붙인다."""
     from sasu.config import load_settings
-    from sasu.rag.answer import LLMClient, LLMError, answer
+    from sasu.rag.answer import LLMError, answer, make_llm_client
     from sasu.rag.evidence import gather, resolve_target, target_of
     from sasu.rag.search import MethodIndex
 
@@ -289,13 +289,16 @@ def ask(
         console.print(f"\n[bold]{e.id}[/bold] [dim]({e.level})[/dim] {e.title}")
         console.print(body, style="dim", markup=False, highlight=False)
 
-    client = LLMClient(load_settings())
+    client = make_llm_client(load_settings())
     try:
-        result = answer(question, chosen.label, evidence, client)
+        with console.status("근거로 답을 만드는 중…"):
+            result = answer(question, chosen.label, evidence, client)
     except LLMError as e:
         console.print(f"\n[red]{e}[/red]\n근거만 보여 줬어요.")
         raise typer.Exit(1)
-    console.print("\n[bold]답[/bold]" + (f" [dim]({result.model})[/dim]" if result.model else ""))
+    cost = getattr(client, "last_cost_usd", None)
+    meta = ", ".join(x for x in [result.model, f"${cost:.4f}" if cost else None] if x)
+    console.print("\n[bold]답[/bold]" + (f" [dim]({meta})[/dim]" if meta else ""))
     for s in result.sentences:
         style = _LABEL_STYLE.get(s.label, "white")
         cites = f" [dim]({', '.join(s.citations)})[/dim]" if s.citations else ""

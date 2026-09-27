@@ -11,6 +11,9 @@ LLM은 OpenAI 호환 주소 하나로 연결한다 (개발: OpenRouter, 현장: 
 
 import json
 import re
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -30,7 +33,9 @@ SYSTEM_PROMPT = """너는 SI 프로젝트 인수인계를 돕는 '사수'다. �
 2. 문장 끝에 근거 번호를 (E1, E3)처럼 단다. [추정]에도 바탕이 된 근거를 단다.
 3. 근거로 답할 수 없으면 첫 문장을 "모름:"으로 시작해 무엇이 부족한지 말하고,
    마지막 줄에 "물어볼 질문: …" 형식으로 떠난 개발자나 PM에게 물을 질문 한 줄을 쓴다.
-4. 한 줄에 한 문장, 6문장 이내, 한국어. 근거에 없는 테이블·메서드·값을 만들어 내지 않는다."""
+4. 한 줄에 한 문장, 6문장 이내, 한국어. 근거에 없는 테이블·메서드·값을 만들어 내지 않는다.
+5. 질문에 대한 답부터 쓴다. 어떤 종류의 근거가 없다는 말(예: 인수인계 답변이 없다)은 쓰지 않는다.
+6. 코드 원문 근거가 있으면 먼저 코드에서 확인되는 동작을 [사실]로 말하고, 이유는 그다음에 쓴다."""
 
 
 class LLMError(RuntimeError):
@@ -70,6 +75,60 @@ class LLMClient:
             raise LLMError(f"LLM 응답 형식이 예상과 다름: {str(data)[:300]}") from e
 
 
+class ClaudeCodeClient:
+    """claude CLI의 헤드리스 모드(claude -p)를 LLM으로 쓴다. API 키 없이 Claude Code 로그인으로 동작한다.
+
+    - --tools "" : 파일 읽기·명령 실행 없이 사수가 준 근거만으로 답하게 한다 (RAG 구조 유지).
+    - --system-prompt : Claude Code 기본 프롬프트 대신 사수의 규칙만 쓴다.
+    - --setting-sources "" : 사용자·프로젝트 설정(CLAUDE.md 등)을 섞지 않는다.
+    - 근거가 길어서 명령줄 대신 표준 입력으로 넘긴다 (Windows 명령줄 길이 한도).
+    개발용이다. 폐쇄망 현장에서는 사내 LLM 서버(openai 방식)를 쓴다.
+    """
+
+    DEFAULT_MODEL = "sonnet"
+
+    def __init__(self, model: str = "", timeout: float = 300.0):
+        self.model = model or self.DEFAULT_MODEL
+        self.timeout = timeout
+        self.executable = shutil.which("claude")
+        self.last_cost_usd: float | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.executable is not None
+
+    def chat(self, messages: list[dict]) -> str:
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        user = "\n\n".join(m["content"] for m in messages if m["role"] == "user")
+        command = [
+            self.executable, "-p", "--output-format", "json", "--tools", "", "--no-session-persistence",
+            "--setting-sources", "", "--system-prompt", system, "--model", self.model,
+        ]
+        try:
+            done = subprocess.run(
+                command, input=user.encode("utf-8"), capture_output=True, timeout=self.timeout,
+                cwd=tempfile.gettempdir(),  # 프로젝트 폴더의 CLAUDE.md를 읽지 않게
+            )
+        except subprocess.TimeoutExpired as e:
+            raise LLMError(f"claude 응답이 {self.timeout:.0f}초 안에 오지 않음") from e
+        out = done.stdout.decode("utf-8", errors="replace")
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError as e:
+            err = done.stderr.decode("utf-8", errors="replace")
+            raise LLMError(f"claude 실행 실패 (exit {done.returncode}): {(err or out)[:300]}") from e
+        if data.get("is_error"):
+            raise LLMError(f"claude 오류: {str(data.get('result'))[:300]}")
+        self.last_cost_usd = data.get("total_cost_usd")
+        return data.get("result") or ""
+
+
+def make_llm_client(settings: Settings):
+    if settings.llm_provider == "claude-code":
+        return ClaudeCodeClient(settings.llm_model)
+    return LLMClient(settings)
+
+
 @dataclass
 class Sentence:
     label: str  # 사실, 답변, 추정, 모름, 질문
@@ -100,7 +159,10 @@ def answer(question: str, target_label: str, evidence: list[Evidence], client: L
     if client is None or not client.available:
         return AnswerResult(
             mode="evidence_only",
-            issues=["LLM이 설정되지 않아 근거만 보여 줍니다 (.env의 SASU_LLM_API_KEY, SASU_LLM_MODEL)."],
+            issues=[
+                "LLM이 설정되지 않아 근거만 보여 줍니다. "
+                ".env에 SASU_LLM_PROVIDER=claude-code(claude CLI 로그인) 또는 SASU_LLM_API_KEY·SASU_LLM_MODEL을 넣으세요."
+            ],
         )
     raw = client.chat(build_messages(question, target_label, evidence))
     result = validate(raw, evidence)
@@ -117,8 +179,11 @@ def validate(raw: str, evidence: list[Evidence]) -> AnswerResult:
         if line.startswith("물어볼 질문"):
             result.sentences.append(Sentence("질문", line.split(":", 1)[-1].strip(), []))
             continue
-        cites = re.findall(r"\bE\d+\b", line)
-        text = re.sub(r"\s*\((?:\s*E\d+\s*,?\s*)+\)\s*$", "", line)
+        cites = list(dict.fromkeys(re.findall(r"\bE\d+\b", line)))
+        # 문장 끝의 "(E1, E3)." 는 따로 보여 주므로 뗀다 (마침표가 붙어 있어도)
+        text = re.sub(r"\s*\((?:\s*E\d+\s*,?\s*)+\)\s*\.?\s*$", "", line)
+        if not text.endswith((".", "?", "!", "다", "요")):
+            text = text.rstrip() + "."
         label_match = re.match(r"^\[(사실|답변|추정)\]\s*", text)
         if text.startswith("모름"):
             result.sentences.append(Sentence("모름", text.split(":", 1)[-1].strip(), cites))

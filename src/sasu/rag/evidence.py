@@ -15,7 +15,7 @@ from sasu.linker import normalize_url
 from sasu.trace import TraceNode, trace_url
 
 FACT, ANSWER, RECORD = "확인된 사실", "인수인계 답변", "기록"
-_MAX_CODE_LINES = 80
+_MAX_CODE_LINES = 150  # 긴 메서드의 뒷부분(예외 처리·null 검사)이 잘리지 않게
 
 
 @dataclass
