@@ -173,7 +173,7 @@ def questions(
     for i, q in enumerate(rows, 1):
         mark = "[green]답변함[/green]" if q["status"] == "answered" else ""
         console.print(
-            f"\n[bold]{i}. {q['question']}[/bold] {mark}\n"
+            f"\n[bold]{i}. [dim]Q{q['id']}[/dim] {q['question']}[/bold] {mark}\n"
             f"   [cyan]{KIND_LABEL.get(q['kind'], q['kind'])}[/cyan] · {q['target'] or '-'} "
             f"[dim]{_short(q['file_path'])}:{q['line']}[/dim]\n"
             f"   [dim]{q['why']}[/dim]"
@@ -196,6 +196,115 @@ def answers(sheet: Path = typer.Argument(..., exists=True, dir_okay=False, help=
     console.print(f"답변 {saved}개를 저장했어요. (지금까지 답변 {total}개)")
     if missing:
         console.print(f"[yellow]질문을 찾지 못한 행 {missing}개 (key 열이 바뀌었거나 다른 프로젝트 질문지)[/yellow]")
+
+
+_LABEL_STYLE = {"사실": "green", "답변": "cyan", "추정": "yellow", "모름": "red", "질문": "magenta"}
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help='물어볼 내용 (예: "휴가 신청할 때 연차가 없으면 어떻게 돼?")'),
+    target: str = typer.Option(None, "--target", "-t", help="대상: Class.method, URL, 파일:줄"),
+    no_git: bool = typer.Option(False, "--no-git", help="커밋 기록을 근거로 쓰지 않는다"),
+    show_code: bool = typer.Option(False, "--show-code", help="근거의 코드 원문을 모두 보여 준다"),
+) -> None:
+    """코드·SQL·인수인계 답변·커밋 기록을 근거로 "왜?"에 답한다. 모든 문장에 근거와 등급을 붙인다."""
+    from sasu.config import load_settings
+    from sasu.rag.answer import LLMClient, LLMError, answer
+    from sasu.rag.evidence import gather, resolve_target, target_of
+    from sasu.rag.search import MethodIndex
+
+    conn = _open_db()
+    repo = _repo(conn)
+    targets = resolve_target(conn, _undo_msys_path(target)) if target else resolve_target(conn, question)
+    if not targets:
+        if target:
+            console.print(f"[red]대상 '{target}'을 찾지 못했어요.[/red]")
+            raise typer.Exit(1)
+        hits = MethodIndex(conn).search(question, top=5)
+        if not hits:
+            console.print("[red]관련 코드를 찾지 못했어요. --target으로 대상을 지정해 주세요.[/red]")
+            raise typer.Exit(1)
+        console.print("[dim]질문으로 찾은 후보 (다른 것이면 --target으로 지정):[/dim]")
+        for i, h in enumerate(hits, 1):
+            console.print(f"[dim]  {i}. {h.label} ({h.score})[/dim]")
+        targets = [target_of(conn, hits[0].method_id)]
+    chosen = targets[0]
+    console.print(f"\n[bold]대상[/bold] {chosen.label}  [dim]{_short(chosen.path)}:{chosen.line_start}[/dim]")
+
+    evidence = gather(conn, chosen, repo, Path("data/cache"), use_git=not no_git)
+    for e in evidence:
+        body = e.text
+        if e.title.endswith(" 코드") and not show_code:
+            lines = body.splitlines()
+            body = "\n".join(lines[:12]) + (f"\n… {len(lines) - 12}줄 더 (--show-code)" if len(lines) > 12 else "")
+        console.print(f"\n[bold]{e.id}[/bold] [dim]({e.level})[/dim] {e.title}")
+        console.print(body, style="dim", markup=False, highlight=False)
+
+    client = LLMClient(load_settings())
+    try:
+        result = answer(question, chosen.label, evidence, client)
+    except LLMError as e:
+        console.print(f"\n[red]{e}[/red]\n근거만 보여 줬어요.")
+        raise typer.Exit(1)
+    console.print("\n[bold]답[/bold]" + (f" [dim]({result.model})[/dim]" if result.model else ""))
+    for s in result.sentences:
+        style = _LABEL_STYLE.get(s.label, "white")
+        cites = f" [dim]({', '.join(s.citations)})[/dim]" if s.citations else ""
+        console.print(f"[{style}][{s.label}][/{style}] {s.text}{cites}")
+    for issue in result.issues:
+        console.print(f"[dim]※ {issue}[/dim]")
+
+
+@app.command("answer")
+def answer_cmd(
+    question_id: str = typer.Argument(..., help="질문 번호 (예: Q12 또는 12)"),
+    text: str = typer.Argument(..., help="받은 답"),
+    by: str = typer.Option(None, "--by", help="답한 사람"),
+) -> None:
+    """떠난 뒤 연락해서 받은 답처럼, 질문 하나의 답을 바로 기록한다."""
+    from datetime import datetime, timezone
+
+    conn = _open_db()
+    qid = int(question_id.lstrip("Qq"))
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cur = conn.execute(
+        """UPDATE questions SET answer = ?, answered_by = ?, status = 'answered', answered_at = ?, updated_at = ?
+           WHERE id = ?""",
+        (text, by, now, now, qid),
+    )
+    conn.commit()
+    if not cur.rowcount:
+        console.print(f"[red]Q{qid} 질문이 없어요. `sasu questions`로 번호를 확인하세요.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Q{qid}에 답을 저장했어요.[/green] 이제 `sasu ask`가 이 답을 근거로 씁니다.")
+
+
+@app.command()
+def draft(question_id: str = typer.Argument(..., help="질문 번호 (예: Q12)")) -> None:
+    """떠난 개발자에게 보낼 질문 메시지 초안을 만든다. 한 번에 정확히 묻도록 코드 위치와 근거를 담는다."""
+    conn = _open_db()
+    q = conn.execute("SELECT * FROM questions WHERE id = ?", (int(question_id.lstrip("Qq")),)).fetchone()
+    if q is None:
+        console.print("[red]질문이 없어요.[/red]")
+        raise typer.Exit(1)
+    project = _meta(conn, "repo_path").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    location = f"{q['file_path']}:{q['line']}" if q["file_path"] else "-"
+    message = (
+        f"안녕하세요, {project} 인수인계를 받은 담당자입니다. 코드 한 곳만 여쭤보고 싶어 연락드렸습니다.\n\n"
+        f"■ 위치: {q['target'] or '-'} ({location})\n"
+        + (f"■ 코드: {q['code']}\n" if q["code"] else "")
+        + f"■ 질문: {q['question']}\n"
+        f"■ 제가 확인한 것: {q['why']}\n\n"
+        "짧게라도 답을 주시면 인수인계 기록에 남겨 다음 담당자도 볼 수 있게 하겠습니다. 감사합니다."
+    )
+    console.print(message, markup=False, highlight=False)
+    console.print(f"\n[dim]답을 받으면: sasu answer Q{q['id']} \"받은 답\" --by 이름[/dim]")
+
+
+def _repo(conn) -> Path | None:
+    path = _meta(conn, "repo_path")
+    return Path(path) if path != "-" and Path(path).exists() else None
 
 
 @app.command("eval-questions")

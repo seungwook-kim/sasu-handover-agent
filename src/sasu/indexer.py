@@ -97,8 +97,8 @@ def _index_java(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStat
         stats.classes += 1
         for f in cls.fields:
             conn.execute(
-                "INSERT INTO fields (class_id, name, type_name, bean_name, line) VALUES (?, ?, ?, ?, ?)",
-                (class_id, f.name, f.type_name, f.bean_name, f.line),
+                "INSERT INTO fields (class_id, name, type_name, bean_name, line, doc) VALUES (?, ?, ?, ?, ?, ?)",
+                (class_id, f.name, f.type_name, f.bean_name, f.line, f.doc),
             )
         for m in cls.methods:
             method_id = conn.execute(

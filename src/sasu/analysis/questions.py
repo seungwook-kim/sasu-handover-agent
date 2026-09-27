@@ -242,8 +242,13 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
     for q in sorted(found, key=lambda q: -q.priority):
         unique.setdefault(q.key, q)
     ordered = _diversify(list(unique.values()), methods)
-    # 지금 실행하면 오류가 나는 것(끊어진 쿼리)은 예측이 아니라 확인된 고장이라 맨 앞에 둔다
-    return [q for q in ordered if q.kind == "broken_sql"] + [q for q in ordered if q.kind != "broken_sql"]
+    # 지금 실행하면 오류가 나는 것(끊어진 쿼리)은 예측이 아니라 확인된 고장이라 맨 앞에 둔다.
+    # 목록·엑셀이 우선순위로 정렬하므로 점수도 가장 높은 점수 위로 올린다.
+    top = max((q.priority for q in ordered if q.kind != "broken_sql"), default=0.0)
+    broken = [q for q in ordered if q.kind == "broken_sql"]
+    for q in broken:
+        q.priority = round(top + q.priority, 1)
+    return broken + [q for q in ordered if q.kind != "broken_sql"]
 
 
 def url_reach(conn: sqlite3.Connection) -> dict[int, int]:

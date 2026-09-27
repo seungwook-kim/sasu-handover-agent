@@ -56,6 +56,7 @@ class JavaField:
     type_name: str
     annotations: list[Annotation]
     line: int
+    doc: str | None = None  # /** 게시물 아이디 */ 같은 필드 주석 (한국어 ↔ 식별자 용어 사전 재료)
 
     @property
     def bean_name(self) -> str | None:
@@ -264,6 +265,10 @@ def _parse_field(node: Node, source: bytes) -> list[JavaField]:
     type_node = node.child_by_field_name("type")
     type_name = _type_name(type_node, source) if type_node is not None else ""
     annotations = _annotations(node, source)
+    doc = None
+    prev = node.prev_named_sibling
+    if prev is not None and prev.type == "block_comment" and prev.end_point.row >= node.start_point.row - 1:
+        doc = " ".join(_text(prev, source).strip("/*").replace("*", " ").split()) or None
     result = []
     for child in node.named_children:
         if child.type == "variable_declarator":
@@ -273,6 +278,7 @@ def _parse_field(node: Node, source: bytes) -> list[JavaField]:
                     type_name=type_name,
                     annotations=annotations,
                     line=node.start_point.row + 1,
+                    doc=doc,
                 )
             )
     return result

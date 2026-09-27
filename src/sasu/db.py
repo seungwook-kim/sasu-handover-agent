@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS fields (
     name TEXT NOT NULL,
     type_name TEXT NOT NULL,
     bean_name TEXT,
-    line INTEGER NOT NULL
+    line INTEGER NOT NULL,
+    doc TEXT                        -- 필드 주석 (게시물 아이디 등)
 );
 
 CREATE TABLE IF NOT EXISTS methods (
@@ -175,7 +176,7 @@ PRESERVED_TABLES = {"questions"}
 
 
 # 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def connect(path: Path) -> sqlite3.Connection:
