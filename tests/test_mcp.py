@@ -85,3 +85,14 @@ def test_stdio_subprocess(project):
             assert "orders.read_order" in _text(result) or "crud.get_order" in _text(result)
 
     anyio.run(run)
+
+
+def test_existing_behaviors_tool(project):
+    from sasu.mcp_server import server
+
+    async def run():
+        async with Client(server) as client:
+            text = _text(await client.call_tool("existing_behaviors", {"url": "orders"}))
+            assert "URL 2개" in text and "쓰기: ORDER_HISTORY(등록)" in text and "분기: 'KIOSK'" in text
+
+    anyio.run(run)

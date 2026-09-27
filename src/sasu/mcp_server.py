@@ -129,6 +129,29 @@ def _tree(node: TraceNode, depth: int, lines: list[str]) -> None:
 
 
 @server.tool(annotations=_READ)
+def existing_behaviors(module: str | None = None, url: str | None = None, project: str | None = None,
+                       limit: int = 30) -> str:
+    """기존 동작 목록: URL마다 처리 메서드, 화면, 읽는·쓰는 테이블, 업무 코드 분기, 주의 주석, 인수인계 답변.
+    고도화 전후에 "원래 하던 일"을 확인할 때 쓴다. module(예: cop.bbs)이나 url 일부로 좁힌다."""
+    from sasu.analysis.behaviors import list_behaviors
+
+    conn = _open(project)
+    items = list_behaviors(conn, module)
+    conn.close()
+    if url:
+        items = [b for b in items if url in b.url]
+    lines = [f"URL {len(items)}개 (보여 주는 것 {min(len(items), limit)}개)"]
+    for b in items[:max(1, min(limit, 200))]:
+        lines.append(f"\n## {b.url}  [{b.module}]  {b.handler}")
+        for label, values in (("화면", b.screens), ("이동", b.redirects), ("읽기", b.reads), ("쓰기", b.writes),
+                              ("분기", b.branches), ("주의 주석", b.notes), ("인수인계 답변", b.answers),
+                              ("확인할 연결", b.external)):
+            if values:
+                lines.append(f"- {label}: " + "; ".join(values))
+    return "\n".join(lines)
+
+
+@server.tool(annotations=_READ)
 def search_code(question: str, project: str | None = None, top: int = 5) -> str:
     """질문 문장으로 관련 메서드 후보를 찾는다 (BM25 + 벡터 + 코드 그래프 + 인수인계 답변)."""
     from sasu.rag.pipeline import search_candidates

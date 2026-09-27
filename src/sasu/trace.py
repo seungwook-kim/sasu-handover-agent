@@ -18,6 +18,7 @@ class TraceNode:
     repeated: bool = False  # 이미 위에서 펼친 노드
     note: str | None = None  # 동적 쿼리 ID, 저장소 밖 빈 등
     count: int = 1  # 같은 부모에서 같은 대상을 여러 번 부른 횟수
+    method_id: int | None = None  # 메서드 노드일 때 (동작 목록이 조건 값·주석을 찾는 데 쓴다)
 
     def walk(self):
         yield self
@@ -59,6 +60,7 @@ def _method_node(conn: sqlite3.Connection, method_id: int, seen: set, depth: int
         label=f"{m['class_name']}.{m['name']}",
         location=f"{m['path']}:{m['line_start']}",
         detail=m["stereotype"],
+        method_id=method_id,
     )
     key = ("method", method_id)
     if key in seen:

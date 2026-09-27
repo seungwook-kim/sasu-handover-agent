@@ -590,6 +590,37 @@ def serve(
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 
 
+@app.command()
+def behaviors(
+    module: str = typer.Argument(None, help="모듈 하나만 (예: cop.bbs). 비우면 전체"),
+    export: Path = typer.Option(None, "--export", help="엑셀 체크리스트로 내보낼 경로 (예: 기존동작목록.xlsx)"),
+    limit: int = typer.Option(20, "--limit", help="화면에 보여 줄 URL 수 (0이면 전부)"),
+) -> None:
+    """기존 동작 목록: 고도화 전에 URL마다 지금 하는 일(화면·읽고 쓰는 테이블·분기 값)을 남긴다."""
+    from sasu.analysis.behaviors import export_behaviors, list_behaviors
+
+    conn = _open_db()
+    items = list_behaviors(conn, module)
+    if not items:
+        console.print(f"[red]'{module}' 모듈의 URL이 없어요. `sasu map`으로 모듈 이름을 확인하세요.[/red]")
+        raise typer.Exit(1)
+    writes = sum(1 for b in items if b.writes)
+    console.print(f"URL {len(items):,}개 · 데이터를 바꾸는 URL {writes:,}개 · 업무 코드로 나뉘는 URL {sum(1 for b in items if b.branches):,}개")
+    table = Table(show_lines=True)
+    for col in ("URL", "처리 메서드", "읽는 테이블", "쓰는 테이블", "분기 값"):
+        table.add_column(col)
+    for b in items if limit == 0 else items[:limit]:
+        values = ", ".join(x.split(" ← ")[0] for x in b.branches[:6])
+        table.add_row(b.url, b.handler, ", ".join(b.reads[:5]) + (" …" if len(b.reads) > 5 else ""),
+                      "[yellow]" + ", ".join(b.writes) + "[/yellow]" if b.writes else "-", values or "-")
+    console.print(table)
+    if export:
+        n = export_behaviors(items, export)
+        console.print(f"[green]엑셀로 내보냄[/green]: {export} ({n}개). 고도화가 끝나면 \"고도화 후 확인\" 열을 채우세요.")
+    elif limit and len(items) > limit:
+        console.print(f"[dim]… {len(items) - limit}개 더 (--limit 0, 또는 --export 파일.xlsx)[/dim]")
+
+
 @app.command("mcp")
 def mcp_cmd() -> None:
     """MCP 서버(stdio): Claude Code·Cursor 같은 에이전트가 사수를 도구로 쓴다. 등록: claude mcp add sasu -- sasu mcp"""

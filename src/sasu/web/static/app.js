@@ -236,7 +236,11 @@ views.overview = async function () {
   }
   const b = data.build;
   const title = b ? `${b.project}${b.version ? " " + b.version : ""}` : $("#project").value;
-  const parts = [h("h2", {}, title), h("p", { class: "lead" }, "처음 투입되면 여기서 시작하세요. 기술 스택, 모듈, 여러 곳이 함께 쓰는 테이블입니다.")];
+  const parts = [
+    h("div", { class: "row" }, h("h2", { class: "grow" }, title),
+      h("a", { class: "btn", href: "/api/behaviors/export", title: "URL마다 지금 하는 일(화면·읽고 쓰는 테이블·분기 값). 고도화 뒤 같은 목록으로 확인" }, "기존 동작 목록 엑셀")),
+    h("p", { class: "lead" }, "처음 투입되면 여기서 시작하세요. 기술 스택, 모듈, 여러 곳이 함께 쓰는 테이블입니다."),
+  ];
 
   parts.push(h("div", { class: "stats" }, Object.entries(data.counts).map(([k, v]) =>
     h("div", { class: "card stat" }, h("div", { class: "n" }, fmt(v)), h("div", { class: "k" }, k)))));

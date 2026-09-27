@@ -82,6 +82,7 @@ claude mcp add sasu -- sasu mcp
 | `handover_questions` | 떠나는 개발자에게 물어야 할 질문 |
 | `record_answer` | 받은 답을 질문에 기록 (이후 `gather_evidence`의 [답변] 근거) |
 | `find_unused` | 끊어진 쿼리, 부르는 곳이 없는 SQL·URL·메서드·JSP |
+| `existing_behaviors` | URL마다 지금 하는 일 (화면, 읽고 쓰는 테이블, 업무 코드 분기, 주석, 인수인계 답변) |
 
 ## 6. 개발용 (이 저장소에서 직접)
 

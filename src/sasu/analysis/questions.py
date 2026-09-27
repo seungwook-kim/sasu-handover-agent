@@ -37,6 +37,15 @@ _COMMON_WORDS = {
 
 
 
+def is_code_value(value: str, lang: str, source: str) -> bool:
+    """조건에 쓰인 값이 업무 코드처럼 보이나 (USR03, '09', Python의 "partial_refund").
+    뻔한 값(Y/N, 0/1, 경로, 클래스 이름)과 너무 긴 문자열은 뺀다."""
+    v = value.strip("'\"")
+    if v in _TRIVIAL_VALUES or len(v) > 40 or _SELF_EXPLANATORY.match(v):
+        return False
+    return bool(_BUSINESS_CODE.match(v)) or _python_code(v, lang, source)
+
+
 def _python_code(value: str, lang: str, source: str) -> bool:
     return (lang == "python" and bool(_LOWER_CODE.match(value)) and value not in _COMMON_WORDS
             and _compared_as_code(value, source))
@@ -195,12 +204,7 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
            JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
            ORDER BY cl.line"""
     ):
-        v = r["value"].strip("'\"")
-        if v in _TRIVIAL_VALUES or value_methods[r["value"]] > _RARE_VALUE_MAX_METHODS or len(v) > 40:
-            continue
-        if _SELF_EXPLANATORY.match(v):
-            continue
-        if not (_BUSINESS_CODE.match(v) or _python_code(v, r["lang"], r["source"])):
+        if value_methods[r["value"]] > _RARE_VALUE_MAX_METHODS or not is_code_value(r["value"], r["lang"], r["source"]):
             continue
         per_method[r["method_id"]].append(r)
     for mid, rows in per_method.items():

@@ -120,6 +120,18 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"'{name}' 모듈의 URL이 없어요.")
         return {"module": name, "urls": [asdict(r) for r in rows]}
 
+    @app.get("/api/behaviors/export")
+    def behaviors_export(module: str | None = None):
+        """기존 동작 목록 엑셀 (고도화 전후 확인용 체크리스트)."""
+        from sasu.analysis.behaviors import export_behaviors, list_behaviors
+
+        name = current_project() or "project"
+        out = Path(tempfile.gettempdir()) / f"sasu-{name}-기존동작목록.xlsx"
+        with _connect() as conn:
+            export_behaviors(list_behaviors(conn, module), out)
+        return FileResponse(out, filename=f"{name}-기존동작목록.xlsx",
+                            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
     # ── 경로 추적 ────────────────────────────────────────────
 
     @app.get("/api/urls")

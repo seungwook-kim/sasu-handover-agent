@@ -121,3 +121,10 @@ def test_no_project_message(tmp_path, monkeypatch):
     monkeypatch.setenv("SASU_DB_PATH", str(tmp_path / "missing.db"))
     res = TestClient(server.create_app()).get("/api/overview")
     assert res.status_code == 409 and res.json()["code"] == "no_project"
+
+
+def test_behaviors_export(client):
+    res = client.get("/api/behaviors/export")
+    assert res.status_code == 200
+    ws = load_workbook(io.BytesIO(res.content)).active
+    assert ws.max_row == 3 and ws.cell(row=1, column=3).value == "URL"  # FastAPI 예제의 URL 2개
