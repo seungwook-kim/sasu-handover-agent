@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 환경 변수 (API 키)
+.env
+
+# 로컬 데이터: 분석 결과 DB, 내려받은 대상 저장소
+*.db
+*.sqlite
+*.sqlite3
+data/repos/
+data/cache/
+
+# 에디터, OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
