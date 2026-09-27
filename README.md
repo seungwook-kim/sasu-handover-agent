@@ -2,7 +2,7 @@
 
 떠나는 개발자에게 무엇을 물어야 할지 코드 분석으로 먼저 찾아 주는 SI 인수인계 에이전트입니다. 받은 답변을 코드 위치에 연결해 두고, 신규 투입자의 "왜?"에 근거와 함께 답합니다.
 
-> **상태: 개발 중.** 코드 분석 그래프(URL → SQL → 테이블 추적)까지 동작합니다. 질문 생성과 "왜?" 답변은 아직입니다.
+> **상태: 개발 중.** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스)까지 동작합니다. 인수인계 질문 생성과 "왜?" 답변은 아직입니다.
 
 ## 사용해 보기
 
@@ -12,7 +12,11 @@
 uv sync
 uv run sasu fetch-sample                                   # 예제: 전자정부 표준프레임워크 공통컴포넌트
 uv run sasu index data/repos/egovframe-common-components   # 분석 (약 2초)
+uv run sasu map                                            # 프로젝트 지도: 기술 스택, 모듈, 핵심 테이블
+uv run sasu map cop.bbs                                    # 모듈 하나: URL마다 읽고 쓰는 테이블
 uv run sasu trace /cop/bbs/selectArticleList.do            # URL 하나의 경로 추적
+uv run sasu common                                         # 공통 코드 사용 현황, 복사해 붙인 코드, 중복 SQL
+uv run sasu unused                                         # 끊어진 쿼리 참조, 안 쓰는 SQL·URL·메서드·JSP
 uv run sasu stats                                          # 분석 요약
 ```
 
@@ -33,6 +37,14 @@ URL /cop/bbs/selectArticleList.do
 eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(9.9%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(6.9%)입니다.
 
 문자열을 더해 만드는 동적 쿼리 ID(`"LoginUsr.updateLoginIncorrect" + userSe`), static 유틸 호출, XML 설정에만 있는 저장소 밖 빈도 따라가거나 표시합니다. 기본 보기는 Controller·Service·DAO만 펼치고, `--full`을 붙이면 유틸 내부까지 모두 펼칩니다. 검증 과정은 [관문 1 검증](docs/gate1-verification.md)에 정리했습니다.
+
+### eGovFrame에서 찾은 것
+
+- **실제 버그 2건:** 당직관리 목록(`/uss/ion/bnt/selectBndtManageList.do`)이 Mapper에 없는 개수 쿼리를 부르고, 인쇄 출력 DAO는 네임스페이스 오타(`PrntngOutptDA`)로 쿼리를 찾을 수 없습니다.
+- **사람의 메모와 일치:** `BBSArticle.selectMaxNttId`를 안 쓰는 SQL로 찾았고, Mapper 수정 이력의 "selectMaxNttId문은 실제 사용하지 않음"을 근거로 붙입니다.
+- **상속 대신 복사:** 보안 조치로 공통 부모 클래스에 넣은 권한 검사(`egovAssertAdminOrOwner`)를 47개 컨트롤러가 복사해 씁니다.
+
+검증과 고친 오탐은 [3단계 검증](docs/gate3-verification.md)에 정리했습니다.
 
 ## 왜 만드나
 
@@ -86,7 +98,7 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 
 - [x] 준비: 대상 프로젝트를 사수 없이 직접 읽고 기능 3개의 흐름 정답 메모 작성
 - [x] 기반 그래프: Java + MyBatis 연결 (관문 1: 정답 메모의 흐름이 그대로 나옴 → [검증 기록](docs/gate1-verification.md))
-- [ ] 보조 기능: 지도, 공통화, 불필요한 소스
+- [x] 보조 기능: 지도, 공통화, 불필요한 소스 → [검증 기록](docs/gate3-verification.md)
 - [ ] 질문 생성
 - [ ] 답변 연결 + "왜?" 질의응답 (관문 2: 폴더 하나로 질문 → 답 입력 → "왜?" 답변까지)
 - [ ] 평가와 개선 (관문 3: 비교표 완성, 약한 결과도 기록)
