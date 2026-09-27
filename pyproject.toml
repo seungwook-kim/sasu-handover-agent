@@ -25,6 +25,9 @@ sasu = "sasu.cli:app"
 local-embed = [
     "fastembed>=0.8.1",
 ]
+mcp = [
+    "mcp>=2.2,<3",  # 2.x API (MCPServer)
+]
 
 [dependency-groups]
 dev = [

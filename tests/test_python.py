@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from sasu import db
 from sasu.indexer import index_repository, python_module
 from sasu.linker_python import resolve_relative

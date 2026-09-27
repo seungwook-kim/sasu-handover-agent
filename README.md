@@ -13,7 +13,7 @@
 설치는 명령 하나입니다 ([uv](https://docs.astral.sh/uv/) 필요). 인터넷이 막힌 PC용 설치 꾸러미(Python 포함)와 사내 LLM 서버 연결은 [설치 안내](docs/install.md)에 있습니다.
 
 ```bash
-uv tool install "sasu[local-embed] @ git+https://github.com/seungwook-kim/sasu-handover-agent"
+uv tool install "sasu[local-embed,mcp] @ git+https://github.com/seungwook-kim/sasu-handover-agent"
 sasu setup                                             # LLM 연결·검색 방식 설정 (질문에 답하면 끝)
 sasu doctor                                            # 무엇이 되고 안 되는지 점검
 ```
@@ -55,6 +55,12 @@ sasu use full-stack-fastapi-template                   # 다른 프로젝트로 
 ![인수인계 질문 화면](docs/images/web-questions.jpg)
 
 분석 결과는 프로젝트마다 `~/.sasu/projects/<폴더 이름>.db`에 따로 저장됩니다. 마지막으로 분석한 프로젝트가 지금 프로젝트가 되고, 인수인계 질문과 답은 다른 프로젝트를 분석해도 섞이거나 지워지지 않습니다.
+
+### 에이전트에 연결 (MCP)
+
+`sasu mcp`는 MCP 서버입니다. Claude Code·Cursor 같은 에이전트가 경로 추적, 근거 모으기, 인수인계 질문·답 기록을 도구로 씁니다 (`claude mcp add sasu -- sasu mcp`). 에이전트의 LLM이 답을 쓰므로 사수 쪽 LLM 설정 없이도 됩니다. 도구 목록은 [설치 안내](docs/install.md#5-에이전트에-연결-mcp)에 있습니다.
+
+Claude Code에 붙여 "게시판 글 목록 화면은 어떤 테이블을 읽고, 그중 여러 모듈이 같이 쓰는 건?"이라고 물었을 때, 에이전트가 `trace_url`과 `project_overview`를 스스로 골라 불러 테이블 8개와 공유 테이블 3개(COMVNUSERMASTER 24개 모듈 등)를 답했습니다.
 
 ### Python 프로젝트
 
@@ -163,7 +169,7 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 | 검색 | BM25(한국어 글자 2-gram) + 벡터 + 코드 그래프 전파 |
 | 임베딩 | fastembed 로컬 모델 또는 OpenAI 호환 `/embeddings` |
 | LLM | OpenAI 호환 API (개발: OpenRouter / 현장: 사내 LLM 서버) |
-| API · 화면 | FastAPI, 웹 UI, MCP 도구 |
+| API · 화면 | FastAPI, 웹 화면(CDN 없는 HTML·JS), MCP 서버 |
 | 평가 | PyDriller로 공개 프로젝트의 과거 커밋 기록 분석 |
 
 ## 평가 방법 (계획)
@@ -190,5 +196,6 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] Python 프로젝트 지원 (FastAPI · Flask · Django), 프로젝트별 분석 파일
 - [x] 다듬기: 웹 화면, 엑셀 내보내기·가져오기
 - [x] 설치: `uv tool install`, 인터넷이 막힌 PC용 꾸러미(Python·모델 포함), `sasu setup`·`sasu doctor`
-- [ ] 사용 테스트
-- [ ] 확장: MCP, 기존 동작 목록
+- [x] 사용 흐름 점검: 답 기록 → 말로 묻기 → [답변] 근거로 답하기 (실제 LLM), 답과 코드가 어긋나면 짚기
+- [x] 확장: MCP 서버 (도구 9개)
+- [ ] 확장: 기존 동작 목록

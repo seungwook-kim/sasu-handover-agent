@@ -7,14 +7,14 @@
 [uv](https://docs.astral.sh/uv/)로 명령어 하나만 설치합니다.
 
 ```bash
-uv tool install "sasu[local-embed] @ git+https://github.com/seungwook-kim/sasu-handover-agent"
+uv tool install "sasu[local-embed,mcp] @ git+https://github.com/seungwook-kim/sasu-handover-agent"
 sasu setup      # LLM 연결·검색 방식을 묻고 설정 파일을 만든다
 sasu doctor     # 무엇이 되고 안 되는지 점검
 sasu index C:\work\my-project
 sasu serve      # 브라우저로 화면 열기
 ```
 
-벡터 검색이 필요 없으면 `[local-embed]`를 빼세요. 설치가 가벼워지고, 검색은 BM25와 코드 그래프로 합니다.
+벡터 검색이 필요 없으면 `local-embed`를, 에이전트 연결이 필요 없으면 `mcp`를 빼세요. `local-embed`를 빼면 설치가 가벼워지고, 검색은 BM25와 코드 그래프로 합니다.
 
 ## 2. 인터넷이 막힌 PC
 
@@ -57,16 +57,42 @@ LLM이 없어도 분석·질문 생성·경로 추적·근거 모으기는 모�
 
 `SASU_HOME` 환경 변수로 위치를 바꿀 수 있습니다. 인수인계 답은 분석 파일에 들어 있으니, 다음 담당자에게 넘길 때는 `projects/<이름>.db` 파일을 함께 넘기거나 엑셀 질문지로 내보내세요.
 
-## 5. 개발용 (이 저장소에서 직접)
+## 5. 에이전트에 연결 (MCP)
+
+Claude Code·Cursor 같은 에이전트가 사수를 도구로 씁니다. 답은 에이전트의 LLM이 쓰고, 사수는 분석 결과와 근거를 돌려주므로 사수 쪽 LLM 설정이 없어도 됩니다.
 
 ```bash
-uv sync --extra local-embed
+claude mcp add sasu -- sasu mcp
+```
+
+다른 에이전트는 설정 파일에 다음을 넣습니다.
+
+```json
+{"mcpServers": {"sasu": {"command": "sasu", "args": ["mcp"]}}}
+```
+
+| 도구 | 하는 일 |
+| --- | --- |
+| `list_projects` | 분석한 프로젝트 목록 |
+| `project_overview` | 기술 스택, 모듈별 URL·SQL·테이블, 여러 모듈이 함께 쓰는 테이블 |
+| `trace_url` | URL → 메서드 → SQL → 테이블 |
+| `search_code` | 질문으로 관련 메서드 찾기 (BM25 + 벡터 + 그래프 + 인수인계 답변) |
+| `gather_evidence` | "왜?"의 근거를 등급(확인된 사실·인수인계 답변·기록)과 번호를 붙여 모음 |
+| `read_code` | 분석한 저장소 안의 파일 읽기 (저장소 밖은 거부) |
+| `handover_questions` | 떠나는 개발자에게 물어야 할 질문 |
+| `record_answer` | 받은 답을 질문에 기록 (이후 `gather_evidence`의 [답변] 근거) |
+| `find_unused` | 끊어진 쿼리, 부르는 곳이 없는 SQL·URL·메서드·JSP |
+
+## 6. 개발용 (이 저장소에서 직접)
+
+```bash
+uv sync --all-extras
 cp .env.example .env    # SASU_HOME=data로 두면 저장소의 data/ 폴더를 쓴다
 uv run sasu --help
 uv run pytest
 ```
 
-## 6. Docker
+## 7. Docker
 
 `Dockerfile`이 있지만 **아직 실제로 빌드해 보지 못했습니다** (개발 PC에 Docker가 없음). 위의 1·2번 방법을 먼저 쓰세요.
 

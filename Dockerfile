@@ -8,7 +8,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv pip install --system ".[local-embed]"
+RUN uv pip install --system ".[local-embed,mcp]"
 
 # 임베딩 모델을 이미지에 넣어 둔다 (실행 중에는 인터넷이 없어도 된다)
 ENV SASU_HOME=/root/.sasu

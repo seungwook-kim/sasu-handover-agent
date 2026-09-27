@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 
 from sasu import db
 from sasu.indexer import index_repository
+from sasu.rag.pipeline import embedder_or_none
 from sasu.web import server
 from test_python import FASTAPI
 
@@ -33,7 +34,7 @@ def client(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setenv("SASU_DB_PATH", str(db_path))
     monkeypatch.setattr("sasu.rag.answer.make_llm_client", lambda settings: FakeClient())
-    server._embedder_or_none.cache_clear()
+    embedder_or_none.cache_clear()
     monkeypatch.setenv("SASU_EMBED_PROVIDER", "none")
     return TestClient(server.create_app())
 

@@ -7,7 +7,6 @@
 import sqlite3
 import tempfile
 from dataclasses import asdict
-from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -16,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from sasu import db
-from sasu.config import active_db_path, cache_dir, current_project, list_projects, load_settings, set_current_project
+from sasu.config import active_db_path, current_project, list_projects, load_settings, set_current_project
 from sasu.handover import draft_message, meta, refresh_questions, repo_of, save_answer
+from sasu.rag.pipeline import choose_target, evidence_for
 from sasu.trace import TraceNode, coverage, find_urls, trace_url
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -241,10 +241,11 @@ def create_app() -> FastAPI:
     def ask_evidence(body: AskIn):
         """대상 코드를 찾고 근거를 모은다. LLM은 부르지 않는다 (빠름)."""
         with _connect() as conn:
-            candidates, chosen = _choose_target(conn, body)
-            evidence = _gather(conn, chosen, body.use_git) if chosen else []
+            sel = choose_target(conn, body.question, body.target, body.method_id)
+            chosen = sel.target
+            evidence = evidence_for(conn, chosen, body.use_git) if chosen else []
             return {
-                "candidates": candidates,
+                "candidates": [asdict(c) for c in sel.candidates],
                 "target": asdict(chosen) if chosen else None,
                 "evidence": [asdict(e) for e in evidence],
             }
@@ -255,10 +256,10 @@ def create_app() -> FastAPI:
         from sasu.rag.answer import LLMError, answer, make_llm_client
 
         with _connect() as conn:
-            _, chosen = _choose_target(conn, body)
+            chosen = choose_target(conn, body.question, body.target, body.method_id).target
             if chosen is None:
                 raise HTTPException(404, "관련 코드를 찾지 못했어요. 대상을 지정해 주세요.")
-            evidence = _gather(conn, chosen, body.use_git)
+            evidence = evidence_for(conn, chosen, body.use_git)
         client = make_llm_client(load_settings())
         if not client.available:
             return {"error": "LLM이 설정되지 않았어요 (.env의 SASU_LLM_PROVIDER). 근거만 보여 드려요."}
@@ -337,43 +338,3 @@ def _node(node: TraceNode) -> dict:
         "note": node.note, "count": node.count, "repeated": node.repeated,
         "children": [_node(c) for c in node.children],
     }
-
-
-def _choose_target(conn: sqlite3.Connection, body: AskIn):
-    """대상을 정한다: 고른 후보 → 직접 적은 대상 → 질문 안의 대상 → 검색 1위."""
-    from sasu.rag.evidence import resolve_target, target_of
-    from sasu.rag.search import MethodIndex
-
-    if body.method_id is not None:
-        return [], target_of(conn, body.method_id)
-    if body.target and body.target.strip():
-        found = resolve_target(conn, body.target)
-        return [], found[0] if found else None
-    found = resolve_target(conn, body.question)
-    if found:
-        return [], found[0]
-    index = MethodIndex(conn, _embedder_or_none())
-    hits = index.search(body.question, top=5)
-    candidates = []
-    for h in hits:
-        t = target_of(conn, h.method_id)
-        candidates.append({"method_id": h.method_id, "label": h.label, "score": h.score,
-                           "path": t.path, "line": t.line_start})
-    return candidates, target_of(conn, hits[0].method_id) if hits else None
-
-
-def _gather(conn: sqlite3.Connection, target, use_git: bool):
-    from sasu.rag.evidence import gather
-
-    return gather(conn, target, repo_of(conn), cache_dir(), use_git=use_git)
-
-
-@lru_cache(maxsize=1)
-def _embedder_or_none():
-    """임베딩 모델은 한 번만 읽어 둔다 (요청마다 읽으면 느리다)."""
-    from sasu.rag.embeddings import EmbeddingError, make_embedder
-
-    try:
-        return make_embedder(load_settings())
-    except EmbeddingError:
-        return None

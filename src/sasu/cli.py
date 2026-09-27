@@ -388,30 +388,24 @@ def ask(
     """코드·SQL·인수인계 답변·커밋 기록을 근거로 "왜?"에 답한다. 모든 문장에 근거와 등급을 붙인다."""
     from sasu.config import load_settings
     from sasu.rag.answer import LLMError, answer, make_llm_client
-    from sasu.rag.evidence import gather, resolve_target, target_of
-    from sasu.rag.search import MethodIndex
+    from sasu.rag.pipeline import choose_target, evidence_for
 
     conn = _open_db()
-    repo = _repo(conn)
-    targets = resolve_target(conn, _undo_msys_path(target)) if target else resolve_target(conn, question)
-    if not targets:
-        if target:
-            console.print(f"[red]대상 '{target}'을 찾지 못했어요.[/red]")
-            raise typer.Exit(1)
-        index = MethodIndex(conn, _embedder_or_none())
-        hits = index.search(question, top=5)
-        if not hits:
-            console.print("[red]관련 코드를 찾지 못했어요. --target으로 대상을 지정해 주세요.[/red]")
-            raise typer.Exit(1)
-        how = "BM25 + 벡터 하이브리드" if index.has_vectors else "BM25 (벡터 색인 없음: sasu embed)"
-        console.print(f"[dim]질문으로 찾은 후보 · {how} (다른 것이면 --target으로 지정):[/dim]")
-        for i, h in enumerate(hits, 1):
-            console.print(f"[dim]  {i}. {h.label} ({h.score})[/dim]")
-        targets = [target_of(conn, hits[0].method_id)]
-    chosen = targets[0]
+    sel = choose_target(conn, question, _undo_msys_path(target) if target else None)
+    if sel.not_found:
+        console.print(f"[red]대상 '{sel.not_found}'을 찾지 못했어요.[/red]")
+        raise typer.Exit(1)
+    if sel.target is None:
+        console.print("[red]관련 코드를 찾지 못했어요. --target으로 대상을 지정해 주세요.[/red]")
+        raise typer.Exit(1)
+    if sel.candidates:
+        console.print(f"[dim]질문으로 찾은 후보 · {sel.how} (다른 것이면 --target으로 지정):[/dim]")
+        for i, c in enumerate(sel.candidates, 1):
+            console.print(f"[dim]  {i}. {c.label} ({c.score})[/dim]")
+    chosen = sel.target
     console.print(f"\n[bold]대상[/bold] {chosen.label}  [dim]{_short(chosen.path)}:{chosen.line_start}[/dim]")
 
-    evidence = gather(conn, chosen, repo, cache_dir(), use_git=not no_git)
+    evidence = evidence_for(conn, chosen, use_git=not no_git)
     for e in evidence:
         body = e.text
         if e.title.endswith(" 코드") and not show_code:
@@ -594,6 +588,17 @@ def serve(
     if not no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+
+
+@app.command("mcp")
+def mcp_cmd() -> None:
+    """MCP 서버(stdio): Claude Code·Cursor 같은 에이전트가 사수를 도구로 쓴다. 등록: claude mcp add sasu -- sasu mcp"""
+    try:
+        from sasu.mcp_server import main
+    except ImportError:
+        console.print("[red]MCP를 쓰려면 먼저 설치하세요: uv sync --extra mcp (또는 pip install 'sasu[mcp]')[/red]")
+        raise typer.Exit(1)
+    main()
 
 
 @app.command("map")
