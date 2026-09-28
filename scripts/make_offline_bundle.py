@@ -124,6 +124,9 @@ def main() -> None:
     (bundle / "install.sh").write_text(INSTALL_SH.replace("{extra}", extra),
                                        encoding="utf-8", newline="\n")
     shutil.copy(ROOT / "docs" / "install.md", bundle / "설치 안내.md")
+    # Claude Code 플러그인(스킬 + MCP): claude plugin marketplace add <이 폴더>
+    shutil.copytree(ROOT / "plugin", bundle / "claude-plugin" / "plugin")
+    shutil.copytree(ROOT / ".claude-plugin", bundle / "claude-plugin" / ".claude-plugin")
 
     size = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file()) / 1024 / 1024
     print(f"\n꾸러미: {bundle} ({size:.0f}MB)")

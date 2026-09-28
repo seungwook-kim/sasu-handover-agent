@@ -4,7 +4,7 @@
 
 **Java(Spring · MyBatis · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
 
-> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP), 설치 꾸러미까지 동작합니다. 테스트 94개.
+> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 97개.
 
 ![경로 추적 화면](docs/images/web-trace.jpg)
 
@@ -65,7 +65,16 @@ eGovFrame 공통컴포넌트에서는 URL 1,182개 중 데이터를 바꾸는 UR
 
 ### 에이전트에 연결 (MCP)
 
-`sasu mcp`는 MCP 서버입니다. Claude Code·Cursor 같은 에이전트가 경로 추적, 근거 모으기, 인수인계 질문·답 기록을 도구로 씁니다 (`claude mcp add sasu -- sasu mcp`). 에이전트의 LLM이 답을 쓰므로 사수 쪽 LLM 설정 없이도 됩니다. 도구 목록은 [설치 안내](docs/install.md#5-에이전트에-연결-mcp)에 있습니다.
+`sasu mcp`는 MCP 서버입니다. Claude Code·Cursor 같은 에이전트가 경로 추적, 근거 모으기, 인수인계 질문·답 기록을 도구로 씁니다. 에이전트의 LLM이 답을 쓰므로 사수 쪽 LLM 설정 없이도 됩니다.
+
+Claude Code에는 **플러그인**(MCP 서버 + 사수 스킬)으로 한 번에 붙입니다. 스킬이 "코드가 지금 폴더에 없어도 분석해 둔 프로젝트를 먼저 확인하고, 근거를 모아 [사실]/[답변]/[추정]으로 답하라"는 흐름을 알려 줍니다.
+
+```bash
+claude plugin marketplace add seungwook-kim/sasu-handover-agent
+claude plugin install sasu@sasu
+```
+
+도구 목록과 MCP만 붙이는 방법은 [설치 안내](docs/install.md#5-에이전트에-연결-claude-code-플러그인mcp)에 있습니다.
 
 Claude Code에 붙여 "게시판 글 목록 화면은 어떤 테이블을 읽고, 그중 여러 모듈이 같이 쓰는 건?"이라고 물었을 때, 에이전트가 `trace_url`과 `project_overview`를 스스로 골라 불러 테이블 8개와 공유 테이블 3개(COMVNUSERMASTER 24개 모듈 등)를 답했습니다.
 
@@ -206,5 +215,5 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] 다듬기: 웹 화면, 엑셀 내보내기·가져오기
 - [x] 설치: `uv tool install`, 인터넷이 막힌 PC용 꾸러미(Python·모델 포함), `sasu setup`·`sasu doctor`
 - [x] 사용 흐름 점검: 답 기록 → 말로 묻기 → [답변] 근거로 답하기 (실제 LLM), 답과 코드가 어긋나면 짚기
-- [x] 확장: MCP 서버 (도구 10개)
+- [x] 확장: MCP 서버 (도구 10개), Claude Code 플러그인 (사수 스킬 + MCP)
 - [x] 확장: 기존 동작 목록 (고도화 전후 확인 체크리스트)

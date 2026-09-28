@@ -186,7 +186,8 @@ def gather_evidence(question: str, target: str | None = None, project: str | Non
     lines = [f"대상: {t.label}  {t.path}:{t.line_start}-{t.line_end}"]
     if sel.candidates:
         others = ", ".join(c.label for c in sel.candidates[1:])
-        lines.append(f"(질문으로 찾은 1위. 다른 후보: {others or '없음'} — 맞지 않으면 target을 지정해 다시 부르세요)")
+        found_by = "같은 이름의 메서드 중 첫째(Service 우선)" if sel.how == "같은 이름" else "질문으로 찾은 1위"
+        lines.append(f"({found_by}. 다른 후보: {others or '없음'} — 맞지 않으면 target에 Class.method를 넣어 다시 부르세요)")
     lines.append("\n근거 등급: 확인된 사실 → [사실], 인수인계 답변 → [답변], 기록(주석·커밋) → [추정]")
     for e in evidence:
         lines.append(f"\n### {e.id} ({e.level}) {e.title}" + (f"  {e.location}" if e.location else ""))

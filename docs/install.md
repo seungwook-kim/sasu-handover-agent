@@ -57,9 +57,22 @@ LLM이 없어도 분석·질문 생성·경로 추적·근거 모으기는 모�
 
 `SASU_HOME` 환경 변수로 위치를 바꿀 수 있습니다. 인수인계 답은 분석 파일에 들어 있으니, 다음 담당자에게 넘길 때는 `projects/<이름>.db` 파일을 함께 넘기거나 엑셀 질문지로 내보내세요.
 
-## 5. 에이전트에 연결 (MCP)
+## 5. 에이전트에 연결 (Claude Code 플러그인·MCP)
 
-Claude Code·Cursor 같은 에이전트가 사수를 도구로 씁니다. 답은 에이전트의 LLM이 쓰고, 사수는 분석 결과와 근거를 돌려주므로 사수 쪽 LLM 설정이 없어도 됩니다.
+Claude Code·Cursor 같은 에이전트가 사수를 도구로 씁니다. 답은 에이전트의 LLM이 쓰고, 사수는 분석 결과와 근거를 돌려주므로 사수 쪽 LLM 설정이 없어도 됩니다. 먼저 1번처럼 `sasu` 명령을 설치해 두세요.
+
+**Claude Code: 플러그인 (스킬 + MCP 한 번에, 권장)**
+
+```bash
+claude plugin marketplace add seungwook-kim/sasu-handover-agent
+claude plugin install sasu@sasu
+```
+
+플러그인에는 MCP 서버와 **사수 스킬**이 함께 들어 있습니다. 스킬은 에이전트에게 언제 사수를 쓰고 어떻게 답할지 알려 줍니다: 코드가 지금 폴더에 없어도 분석해 둔 프로젝트를 먼저 확인하기, "왜?"에는 근거를 모아 문장마다 [사실]/[답변]/[추정]과 근거 번호를 붙이기, 받은 답만 기록하기, 정리 후보는 확인 없이 지우지 않기. 인터넷이 막힌 PC에서는 오프라인 꾸러미의 `claude-plugin` 폴더를 `claude plugin marketplace add <그 폴더>`로 추가합니다.
+
+도구 이름 없이 "휴가 신청 처리에서 결과 코드가 09면 왜 따로 처리해?"라고만 물었을 때, 에이전트가 스킬을 따라 `list_projects` → `gather_evidence`를 불러 "09는 연차 연도 체크 실패 코드"라고 코드 근거와 함께 답하고, 이유는 [추정]으로 남긴 채 떠난 개발자에게 물을 질문을 제안했습니다.
+
+**Claude Code: MCP만**
 
 ```bash
 claude mcp add sasu -- sasu mcp

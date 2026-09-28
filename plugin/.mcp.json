@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sasu": {
+      "command": "sasu",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "sasu",
+  "owner": { "name": "seungwook-kim" },
+  "description": "사수(SASU) SI 인수인계 도우미 플러그인",
+  "plugins": [
+    {
+      "name": "sasu",
+      "source": "./plugin",
+      "description": "SI 인수인계·레거시 코드 도우미: 스킬 + MCP 서버 (sasu 명령 설치 필요)"
+    }
+  ]
+}

@@ -36,7 +36,12 @@ def choose_target(conn: sqlite3.Connection, question: str, target: str | None = 
         return Selection(target_of(conn, method_id))
     if target and target.strip():
         found = resolve_target(conn, target)
-        return Selection(found[0]) if found else Selection(None, not_found=target)
+        if not found:
+            return Selection(None, not_found=target)
+        # 같은 이름이 여러 곳에 있으면 (메서드 이름만 준 경우) 나머지를 다른 후보로 보여 준다
+        others = [Candidate(t.method_id, t.label, 0.0, t.path, t.line_start) for t in found[1:]]
+        return Selection(found[0], [Candidate(found[0].method_id, found[0].label, 0.0, found[0].path,
+                                              found[0].line_start)] + others if others else [], "같은 이름")
     found = resolve_target(conn, question)
     if found:
         return Selection(found[0])

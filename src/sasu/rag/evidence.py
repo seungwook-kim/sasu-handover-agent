@@ -59,6 +59,16 @@ def resolve_target(conn: sqlite3.Connection, text: str) -> list[Target]:
                WHERE (c.name = ? OR c.name LIKE ?) AND m.name = ? ORDER BY m.line_start""",
             (cls, f"%.{cls}", method),
         ).fetchall()
+    elif re.match(r"^[A-Za-z_]\w{2,}$", text):
+        # 메서드 이름만 (insertVcatnManage): 같은 이름이 Controller·Service·DAO에 다 있으면
+        # 업무 규칙이 있는 Service를 앞에 둔다. 나머지는 다른 후보로 돌려준다
+        rows = conn.execute(
+            """SELECT m.id FROM methods m JOIN classes c ON c.id = m.class_id WHERE m.name = ?
+               ORDER BY CASE c.stereotype WHEN 'Service' THEN 0 WHEN 'Controller' THEN 1
+                        WHEN 'RestController' THEN 1 WHEN 'Repository' THEN 2 ELSE 3 END, c.name
+               LIMIT 10""",
+            (text,),
+        ).fetchall()
     return [target_of(conn, r["id"]) for r in rows]
 
 

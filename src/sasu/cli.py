@@ -399,7 +399,8 @@ def ask(
         console.print("[red]관련 코드를 찾지 못했어요. --target으로 대상을 지정해 주세요.[/red]")
         raise typer.Exit(1)
     if sel.candidates:
-        console.print(f"[dim]질문으로 찾은 후보 · {sel.how} (다른 것이면 --target으로 지정):[/dim]")
+        found_by = "같은 이름의 메서드 (Service 우선)" if sel.how == "같은 이름" else f"질문으로 찾은 후보 · {sel.how}"
+        console.print(f"[dim]{found_by} (다른 것이면 --target에 Class.method로 지정):[/dim]")
         for i, c in enumerate(sel.candidates, 1):
             console.print(f"[dim]  {i}. {c.label} ({c.score})[/dim]")
     chosen = sel.target

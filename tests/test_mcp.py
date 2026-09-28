@@ -96,3 +96,17 @@ def test_existing_behaviors_tool(project):
             assert "URL 2개" in text and "쓰기: ORDER_HISTORY(등록)" in text and "분기: 'KIOSK'" in text
 
     anyio.run(run)
+
+
+def test_bare_method_name_target(project):
+    """에이전트가 메서드 이름만 넘겨도 찾는다. 같은 이름이 여럿이면 나머지를 후보로 알려 준다."""
+    from sasu.mcp_server import server
+
+    async def run():
+        async with Client(server) as client:
+            one = _text(await client.call_tool("gather_evidence", {"question": "왜?", "target": "read_order", "use_git": False}))
+            assert "대상: orders.read_order" in one and "다른 후보" not in one
+            many = _text(await client.call_tool("gather_evidence", {"question": "왜?", "target": "insert", "use_git": False}))
+            assert "대상: OrderRepository.insert" in many
+
+    anyio.run(run)
