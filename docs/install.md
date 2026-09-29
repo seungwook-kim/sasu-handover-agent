@@ -106,6 +106,8 @@ uv run sasu --help
 uv run pytest
 ```
 
+개발하면서 쓰려면 `uv tool install --editable ".[local-embed,mcp]"`로 설치합니다. 코드를 고치면 `sasu` 명령과 MCP 서버에 바로 반영됩니다. 스킬(`plugin/skills/sasu/SKILL.md`)을 고쳤다면 `plugin/.claude-plugin/plugin.json`의 `version`을 올리고 푸시한 뒤 `claude plugin marketplace update sasu && claude plugin update sasu@sasu`를 실행하세요. 버전이 같으면 새 내용을 받지 않습니다.
+
 ## 7. Docker
 
 `Dockerfile`이 있지만 **아직 실제로 빌드해 보지 못했습니다** (개발 PC에 Docker가 없음). 위의 1·2번 방법을 먼저 쓰세요.
