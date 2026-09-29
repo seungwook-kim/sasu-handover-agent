@@ -110,3 +110,15 @@ def test_bare_method_name_target(project):
             assert "대상: OrderRepository.insert" in many
 
     anyio.run(run)
+
+
+def test_read_code_by_method_name(project):
+    from sasu.mcp_server import server
+
+    async def run():
+        async with Client(server) as client:
+            text = _text(await client.call_tool("read_code", {"target": "crud.get_order"}))
+            assert text.startswith("backend/app/crud.py") and "def get_order" in text
+            assert (await client.call_tool("read_code", {})).is_error
+
+    anyio.run(run)

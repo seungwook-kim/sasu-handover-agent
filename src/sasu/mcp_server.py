@@ -202,13 +202,24 @@ def gather_evidence(question: str, target: str | None = None, project: str | Non
 
 
 @server.tool(annotations=_READ)
-def read_code(path: str, start: int = 1, end: int | None = None, project: str | None = None) -> str:
-    """분석한 저장소 안의 파일을 줄 번호와 함께 읽는다 (최대 300줄). path는 저장소 기준 상대 경로."""
+def read_code(path: str | None = None, start: int = 1, end: int | None = None, target: str | None = None,
+              project: str | None = None) -> str:
+    """분석한 저장소 안의 코드를 줄 번호와 함께 읽는다 (최대 300줄).
+    path(저장소 기준 상대 경로)와 줄 범위, 또는 target(Class.method나 메서드 이름)으로 그 메서드 전체를 읽는다."""
+    from sasu.rag.evidence import resolve_target
+
     conn = _open(project)
     repo = repo_of(conn)
+    found = resolve_target(conn, target) if target else []
     conn.close()
     if repo is None:
         raise ToolError("분석한 원본 폴더를 찾지 못했습니다.")
+    if target:
+        if not found:
+            raise ToolError(f"'{target}' 메서드를 찾지 못했습니다. search_code로 이름을 확인하세요.")
+        path, start, end = found[0].path, found[0].line_start, found[0].line_end
+    if not path:
+        raise ToolError("path나 target 중 하나를 주세요.")
     file = (repo / path).resolve()
     if not file.is_relative_to(repo.resolve()) or not file.is_file():
         raise ToolError(f"저장소 안에 '{path}' 파일이 없습니다.")
