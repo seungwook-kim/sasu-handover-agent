@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "sasu",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "사수: SI 인수인계·레거시 코드 도우미. URL→메서드→SQL→테이블 추적, 근거를 붙인 '왜?' 답변, 인수인계 질문·답 기록, 고도화 전 기존 동작 목록 (Java·Python).",
   "author": { "name": "seungwook-kim" },
   "homepage": "https://github.com/seungwook-kim/sasu-handover-agent",
