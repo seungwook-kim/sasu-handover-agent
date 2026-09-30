@@ -6,7 +6,9 @@
 
 > **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 106개.
 
-![경로 추적 화면](docs/images/web-trace.jpg)
+![경로 추적 → 코드 보기 → 떠난 개발자에게 보낼 질문](docs/images/demo-trace-questions.gif)
+
+문제 정의, 설계 결정과 이유, 결과 수치, 한계를 한 장으로 정리한 [프로젝트 요약](docs/portfolio.md)이 있습니다.
 
 ## 사용해 보기
 
@@ -130,6 +132,10 @@ URL /{settings.API_V1_STR}/users/signup
 
 질문에 맞는 코드를 **BM25 + 벡터(sqlite-vec) + 코드 그래프**로 찾고, 코드·SQL·호출 관계·주석과 수정 이력·인수인계 답변·커밋 기록을 근거로 모아 LLM에 넘깁니다. LLM은 모든 문장을 [사실]/[답변]/[추정]으로 시작하고 근거 번호를 달아야 하며, 코드가 이를 검사해 근거가 약한 문장은 [추정]으로 낮춥니다. 포맷 정리·릴리스 커밋은 건너뛰고 그 줄을 실제로 바꾼 커밋 메시지를 찾습니다.
 
+![물어보기: 근거가 없으면 모른다고 하고, 맞는 코드를 고르면 근거와 등급을 붙여 답한다](docs/images/demo-ask.gif)
+
+위 화면에서 처음 찾은 코드(목록 개수 조회)에는 "09"가 없어서 [모름]이라고 답합니다. 후보 중 `insertVcatnManage`를 고르면 "연차 연도 체크(`getVcatnYearSE`)가 false면 09를 돌려준다"를 [사실]로, 연도 체크의 업무 이유는 [추정]으로 나눠 답하고 떠난 개발자에게 물을 질문을 남깁니다.
+
 LLM은 OpenAI 호환 주소(개발: OpenRouter, 현장: 사내 LLM 서버) 또는 이 PC에 로그인된 claude CLI(`SASU_LLM_PROVIDER=claude-code`, 개발용)로 연결합니다.
 
 - **검색:** 버그 증상 설명으로 고칠 메서드를 찾는 평가(질문 173개)에서 상위 10개 안에 정답이 있는 비율 63%. 인수인계 답변이 질문과 맞으면 그 답을 단 메서드를 끌어올립니다.
@@ -157,7 +163,7 @@ URL /cop/bbs/selectArticleList.do
     └── 화면 WEB-INF/jsp/egovframework/com/cop/bbs/EgovArticleList.jsp
 ```
 
-eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(9.9%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(6.9%)입니다.
+eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.3%가 SQL까지 이어집니다. 나머지는 화면만 보여 주는 URL(9.9%)과 LDAP·메시지·검증처럼 DB를 쓰지 않는 URL(6.8%)입니다.
 
 문자열을 더해 만드는 동적 쿼리 ID(`"LoginUsr.updateLoginIncorrect" + userSe`), static 유틸 호출, XML 설정에만 있는 저장소 밖 빈도 따라가거나 표시합니다. 기본 보기는 Controller·Service·DAO만 펼치고, `--full`을 붙이면 유틸 내부까지 모두 펼칩니다. 검증 과정은 [관문 1 검증](docs/gate1-verification.md)에 정리했습니다.
 
@@ -168,6 +174,30 @@ eGovFrame 공통컴포넌트(URL 1,182개)에서 URL의 83.2%가 SQL까지 이�
 - **상속 대신 복사:** 보안 조치로 공통 부모 클래스에 넣은 권한 검사(`egovAssertAdminOrOwner`)를 47개 컨트롤러가 복사해 씁니다.
 
 검증과 고친 오탐은 [3단계 검증](docs/gate3-verification.md)에 정리했습니다.
+
+## 구조
+
+```mermaid
+flowchart LR
+    subgraph 입력
+        SRC["Java·Python 소스"]
+        SQLX["MyBatis·iBatis XML"]
+        VIEW["JSP·템플릿·설정"]
+        GIT["git 기록"]
+    end
+    SRC & SQLX & VIEW --> PARSE["파서<br/>tree-sitter·정규식"]
+    PARSE --> GRAPH[("코드 그래프 · SQLite<br/>URL → 메서드 → SQL → 테이블")]
+    GRAPH --> QGEN["질문 생성<br/>끊어진 쿼리·업무 코드 분기·TODO"]
+    QGEN --> SHEET["엑셀 질문지"] --> ANS["떠나는 개발자의 답"]
+    ANS --> GRAPH
+    GRAPH --> SEARCH["검색<br/>BM25 + 벡터 + 그래프 + 답변"]
+    SEARCH --> EVID["근거 모으기<br/>확인된 사실 · 인수인계 답변 · 기록"]
+    GIT --> EVID
+    EVID --> LLM["LLM<br/>사내 서버 또는 claude"] --> CHECK["등급 검사<br/>[사실] [답변] [추정]"]
+    GRAPH --> OUT["CLI · 웹 화면 · MCP · Claude Code 플러그인<br/>지도 · 경로 추적 · 정리 후보 · 기존 동작 목록"]
+```
+
+확정할 수 있는 것(호출 관계, SQL, 테이블, 참조 여부)은 정적 분석이 정하고, LLM은 모은 근거로 설명만 합니다. LLM이 쓴 문장은 코드가 다시 검사해, 근거와 등급이 맞지 않으면 [추정]으로 낮춥니다.
 
 ## 왜 만드나
 
@@ -234,3 +264,7 @@ SI 고도화·유지보수 프로젝트에서 인수인계는 보통 1주 정도
 - [x] 사용 흐름 점검: 답 기록 → 말로 묻기 → [답변] 근거로 답하기 (실제 LLM), 답과 코드가 어긋나면 짚기
 - [x] 확장: MCP 서버 (도구 10개), Claude Code 플러그인 (사수 스킬 + MCP)
 - [x] 확장: 기존 동작 목록 (고도화 전후 확인 체크리스트)
+
+## 라이선스
+
+MIT

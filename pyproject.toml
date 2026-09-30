@@ -3,6 +3,7 @@ name = "sasu"
 version = "0.1.0"
 description = "떠난 개발자 대신 답하는 SI 인수인계 에이전트"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     # 0.26.0은 여러 파일을 연달아 파싱하면 Windows에서 access violation이 난다
