@@ -32,6 +32,23 @@ ORM_KIND = {
 _MODEL_FACTORIES = {"model_validate", "model_construct", "from_orm", "parse_obj", "from_dict"}
 _SESSION_WRITES = {"add": "insert", "add_all": "insert", "merge": "update", "delete": "delete"}
 _SQL_START = re.compile(r"^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|MERGE)\b", re.IGNORECASE)
+# 첫 단어만 보면 로그 문구("insert BackupResult Data : {}")도 걸린다. 종류마다 있어야 할 말을 본다
+_SQL_SHAPE = {
+    "select": re.compile(r"\bFROM\b", re.IGNORECASE), "with": re.compile(r"\bSELECT\b", re.IGNORECASE),
+    "insert": re.compile(r"\bINTO\b", re.IGNORECASE), "merge": re.compile(r"\bINTO\b", re.IGNORECASE),
+    "update": re.compile(r"\bSET\b", re.IGNORECASE), "delete": re.compile(r"\bFROM\b", re.IGNORECASE),
+}
+
+
+def sql_kind(text: str) -> str | None:
+    """코드 안 문자열이 SQL이면 종류(select·insert·update·delete·merge), 아니면 None."""
+    match = _SQL_START.match(text)
+    if not match or len(text) < 15:
+        return None
+    kind = match.group(1).lower()
+    if not _SQL_SHAPE[kind].search(text):
+        return None
+    return "select" if kind == "with" else kind
 # 너무 흔해서 이름만으로 추정하면 틀리기 쉬운 메서드 이름
 _GENERIC_NAMES = {
     "get", "set", "post", "put", "delete", "save", "update", "create", "add", "remove", "run", "main", "init",
@@ -148,11 +165,9 @@ def link_python(conn: sqlite3.Connection, edges: set, classes: dict, methods: di
            JOIN methods m ON m.id = s.method_id JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
            WHERE f.kind = 'python'"""
     ).fetchall():
-        match = _SQL_START.match(lit["value"])
-        if not match or len(lit["value"]) < 15:
+        kind = sql_kind(lit["value"])
+        if kind is None:
             continue
-        kind = match.group(1).lower()
-        kind = "select" if kind == "with" else kind
         sid = conn.execute(
             "INSERT INTO statements (file_id, full_id, kind, line, sql) VALUES (?, ?, ?, ?, ?)",
             (classes[lit["class_id"]]["file_id"], f"SQL {lit['path']}:{lit['line']}", kind, lit["line"], lit["value"]),

@@ -6,7 +6,7 @@ description: >-
   기억이나 일반 지식으로 답하거나 모른다고 하기 전에 sasu 도구로 확인한다 (기억은 버전이 다를 수 있다). 예: "이 기능/코드 왜 이렇게 돼 있어?", "결과 코드 09면 왜 따로 처리해?",
   "이 화면(URL)은 어떤 테이블을 읽고 써?", "이거 고치면 어디에 영향 가?", "인수인계 때 뭘 물어봐야 해?",
   "떠난 개발자가 준 답 기록해 줘", "고도화 전에 지금 동작 정리해 줘", "안 쓰는 SQL·메서드 찾아 줘",
-  "처음 투입됐는데 프로젝트 구조 알려 줘". Java(Spring·MyBatis·JSP)·Python(FastAPI·Flask·Django).
+  "처음 투입됐는데 프로젝트 구조 알려 줘". Java(Spring·MyBatis·iBatis·JPA·JSP)·Python(FastAPI·Flask·Django).
 ---
 
 # 사수: 인수인계·레거시 코드 도우미

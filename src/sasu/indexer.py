@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,7 +12,7 @@ from sasu import db
 from sasu.linker import link
 from sasu.parsers.build_info import read_build_info
 from sasu.parsers.java_parser import JavaFile, parse_java
-from sasu.parsers.mybatis_parser import parse_mapper
+from sasu.parsers.mybatis_parser import extract_tables, parse_mapper
 from sasu.parsers.python_parser import parse_python, route_paths
 from sasu.parsers.web_refs import extract_refs
 
@@ -35,6 +35,7 @@ class IndexStats:
     jsp_files: int = 0
     urls: int = 0
     edges: int = 0
+    annotated_sql: list = field(default_factory=list)  # @Select·@Query (모든 파일을 읽은 뒤 저장)
 
 
 def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> IndexStats:
@@ -62,6 +63,7 @@ def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> Inde
         elif suffix == ".properties":
             _index_refs(conn, path, rel, kind="config", methods=True)
 
+    stats.statements += _store_annotated_sql(conn, stats.annotated_sql)
     link_stats = link(conn)
     stats.urls = link_stats.urls
     stats.edges = link_stats.edges
@@ -156,6 +158,11 @@ def _store_code(conn: sqlite3.Connection, parsed: JavaFile, rel: str, kind: str,
                 "INSERT INTO fields (class_id, name, type_name, bean_name, line, doc) VALUES (?, ?, ?, ?, ?, ?)",
                 (class_id, f.name, f.type_name, f.bean_name, f.line, f.doc),
             )
+        if cls.repository_entity:
+            # Spring Data 저장소가 다루는 엔티티 (linker가 save·findById 같은 상속 메서드를 테이블로 잇는다)
+            conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (f"jparepo:{class_id}", cls.repository_entity))
+        if kind == "java":
+            stats.annotated_sql.extend(_annotated_sql(cls, file_id))
         if kind == "python" and cls.kind == "module":
             # 모듈 수준 router = APIRouter(prefix=...)는 URL 접두어 계산에 쓴다 (인자가 없어도 저장)
             for f in cls.fields:
@@ -213,6 +220,65 @@ def _store_code(conn: sqlite3.Connection, parsed: JavaFile, rel: str, kind: str,
             )
 
 
+_SQL_ANNOTATIONS = {"Select": "select", "Insert": "insert", "Update": "update", "Delete": "delete", "Query": None}
+
+
+def _annotated_sql(cls, file_id: int) -> list[tuple]:
+    """MyBatis @Select("…")·JPA @Query("…")처럼 메서드에 붙은 SQL. 쿼리 ID는 클래스.메서드.
+    돌려주는 값: (file_id, full_id, kind, line, sql, jpql 여부)."""
+    result = []
+    for m in cls.methods:
+        for ann in m.annotations:
+            if ann.name not in _SQL_ANNOTATIONS or not ann.args.get("value"):
+                continue
+            sql = " ".join(ann.args["value"]).strip()
+            kind = _SQL_ANNOTATIONS[ann.name]
+            if kind is None:  # @Query: 본문 첫 단어로
+                word = sql.split(None, 1)[0].lower() if sql else ""
+                kind = word if word in ("select", "insert", "update", "delete") else "select"
+            jpql = ann.name == "Query" and (ann.first("nativeQuery") or "").lower() != "true"
+            result.append((file_id, f"{cls.fqcn}.{m.name}", kind, m.line_start, sql, jpql))
+    return result
+
+
+def _store_annotated_sql(conn: sqlite3.Connection, pending: list[tuple]) -> int:
+    """모든 파일을 읽은 뒤에 저장한다. JPQL의 엔티티 이름(Order)을 테이블(TB_ORDER)로 바꾸려면 엔티티를 다 알아야 한다."""
+    entities = entity_tables(conn)
+    for file_id, full_id, kind, line, sql, jpql in pending:
+        sid = conn.execute(
+            "INSERT INTO statements (file_id, full_id, kind, line, sql) VALUES (?, ?, ?, ?, ?)",
+            (file_id, full_id, kind, line, sql),
+        ).lastrowid
+        tables = map_entity_tables(extract_tables(sql), entities) if jpql else extract_tables(sql)
+        conn.executemany("INSERT INTO statement_tables (statement_id, table_name) VALUES (?, ?)",
+                         [(sid, t) for t in tables])
+    return len(pending)
+
+
+def entity_tables(conn: sqlite3.Connection) -> dict[str, str]:
+    """JPA 엔티티 이름(대문자) → 테이블."""
+    return {
+        r["name"].split(".")[-1].upper(): r["table_name"].upper()
+        for r in conn.execute(
+            """SELECT c.name, c.table_name FROM classes c JOIN files f ON f.id = c.file_id
+               WHERE f.kind = 'java' AND c.table_name IS NOT NULL"""
+        )
+    }
+
+
+def map_entity_tables(names: list[str], entities: dict[str, str]) -> list[str]:
+    """JPQL: FROM Order o JOIN o.items i → TB_ORDER. 별칭 경로(O.ITEMS)는 테이블이 아니라서 뺀다."""
+    result = []
+    for name in names:
+        if name in entities:
+            name = entities[name]
+        elif "." in name and len(name.split(".")[0]) <= 3:
+            continue
+        if name not in result:
+            result.append(name)
+    return result
+
+
 _MAX_REF_FILE_BYTES = 2_000_000
 
 
@@ -236,7 +302,7 @@ def _index_mapper(
 ) -> bool:
     """Mapper XML이면 저장하고 True. 다른 DB용 Mapper도 True(건너뜀). Mapper가 아니면 False."""
     text = path.read_text(encoding="utf-8", errors="replace")
-    if "<mapper" not in text:
+    if "<mapper" not in text and "<sqlMap" not in text:
         return False
     if not _dialect_matches(path.name, dialect):
         return True
@@ -249,8 +315,12 @@ def _index_mapper(
     ).lastrowid
     stats.mapper_files += 1
     for s in parsed.statements:
-        # MyBatis 규칙: id가 이미 "네임스페이스."로 시작하면 네임스페이스를 다시 붙이지 않는다
-        full_id = s.id if s.id.startswith(parsed.namespace + ".") else f"{parsed.namespace}.{s.id}"
+        # MyBatis 규칙: id가 이미 "네임스페이스."로 시작하면 네임스페이스를 다시 붙이지 않는다.
+        # iBatis는 네임스페이스가 없을 수 있다 (그때는 id만으로 부른다)
+        if not parsed.namespace or s.id.startswith(parsed.namespace + "."):
+            full_id = s.id
+        else:
+            full_id = f"{parsed.namespace}.{s.id}"
         stmt_id = conn.execute(
             "INSERT INTO statements (file_id, full_id, kind, line, sql) VALUES (?, ?, ?, ?, ?)",
             (file_id, full_id, s.kind, s.line, s.sql),

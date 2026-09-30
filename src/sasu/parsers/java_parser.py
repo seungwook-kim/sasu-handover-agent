@@ -153,6 +153,7 @@ class JavaClass:
     # Python처럼 애노테이션이 없는 언어는 파일·클래스 이름으로 계층을 정해 넣는다
     explicit_stereotype: str | None = None
     table_name: str | None = None  # ORM 모델이 매핑하는 테이블
+    repository_entity: str | None = None  # Spring Data: interface XRepository extends JpaRepository<Order, Long> → Order
 
     @property
     def fqcn(self) -> str:
@@ -242,6 +243,7 @@ def _parse_class(node: Node, source: bytes, package: str, prefix: str) -> list[J
     kind = node.type.removesuffix("_declaration")
     superclass = None
     interfaces: list[str] = []
+    repository_entity = None
     sup = node.child_by_field_name("superclass")
     if sup is not None:
         superclass = _type_name(sup.named_children[-1], source)
@@ -251,6 +253,8 @@ def _parse_class(node: Node, source: bytes, package: str, prefix: str) -> list[J
             type_list = next((c for c in child.named_children if c.type == "type_list"), None)
             if type_list is not None:
                 interfaces = [_type_name(t, source) for t in type_list.named_children]
+                repository_entity = next(
+                    (e for t in type_list.named_children if (e := _repository_entity(t, source))), None)
 
     fields: list[JavaField] = []
     methods: list[JavaMethod] = []
@@ -283,8 +287,34 @@ def _parse_class(node: Node, source: bytes, package: str, prefix: str) -> list[J
         fields=fields,
         methods=methods,
         doc=_preceding_doc(node, source),
+        repository_entity=repository_entity,
     )
+    if cls.annotation("Entity"):
+        table = cls.annotation("Table")
+        # @Table(name=...)이 없으면 Spring Boot 기본 규칙: OrderItem → ORDER_ITEM
+        cls.table_name = (table.first("name") if table else None) or snake_upper(name.split(".")[-1])
     return [cls, *inner]
+
+
+# Spring Data 저장소 기반 인터페이스 (첫 번째 타입 인자가 엔티티)
+REPOSITORY_BASES = {
+    "JpaRepository", "CrudRepository", "PagingAndSortingRepository", "ListCrudRepository",
+    "ListPagingAndSortingRepository", "Repository", "JpaSpecificationExecutor", "QuerydslPredicateExecutor",
+}
+
+
+def _repository_entity(node: Node, source: bytes) -> str | None:
+    if node.type != "generic_type" or _type_name(node, source) not in REPOSITORY_BASES:
+        return None
+    args = next((c for c in node.named_children if c.type == "type_arguments"), None)
+    if args is None or not args.named_children:
+        return None
+    return _type_name(args.named_children[0], source)
+
+
+def snake_upper(name: str) -> str:
+    """OrderItem → ORDER_ITEM (JPA 엔티티의 기본 테이블 이름)."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).upper()
 
 
 def _parse_field(node: Node, source: bytes) -> list[JavaField]:

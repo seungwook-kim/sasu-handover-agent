@@ -16,7 +16,7 @@ from sasu.analysis.overview import class_modules
 from sasu.analysis.questions import is_code_value
 from sasu.trace import trace_url
 
-_WRITE_LABEL = {"INSERT": "등록", "UPDATE": "수정", "DELETE": "삭제", "MERGE": "병합"}
+_WRITE_LABEL = {"INSERT": "등록", "UPDATE": "수정", "DELETE": "삭제", "MERGE": "저장", "CALL": "프로시저"}  # MERGE: JPA save·MERGE INTO
 
 
 @dataclass

@@ -1,4 +1,7 @@
-"""MyBatis Mapper XML에서 네임스페이스, 쿼리 ID, 사용 테이블을 뽑는다.
+"""MyBatis Mapper XML과 iBatis sqlMap XML에서 네임스페이스, 쿼리 ID, 사용 테이블을 뽑는다.
+
+iBatis(<sqlMap>)는 오래된 SI 프로젝트(전자정부 2.x 등)에 많다. 네임스페이스가 없을 수 있고,
+동적 태그(<isNotEmpty>, <dynamic>)와 <statement>·<procedure>가 있다.
 
 XML 파서 대신 정규식을 쓴다. 줄 번호가 필요하고, 동적 SQL 태그(<if>, <choose>)가
 섞인 본문에서 테이블 이름만 뽑으면 되기 때문이다.
@@ -8,8 +11,11 @@ import re
 from dataclasses import dataclass, field
 
 _NAMESPACE = re.compile(r'<mapper\s+namespace\s*=\s*"([^"]+)"')
+_SQLMAP = re.compile(r'<sqlMap\b([^>]*)>')
+_SQLMAP_NAMESPACE = re.compile(r'\bnamespace\s*=\s*"([^"]*)"')
+_FIRST_WORD = re.compile(r"\s*\{?\s*(\w+)")
 _STATEMENT = re.compile(
-    r'<(select|insert|update|delete)\b([^>]*)>(.*?)</\1\s*>',
+    r'<(select|insert|update|delete|statement|procedure)\b([^>]*)>(.*?)</\1\s*>',
     re.DOTALL | re.IGNORECASE,
 )
 _ID_ATTR = re.compile(r'\bid\s*=\s*"([^"]+)"')
@@ -40,15 +46,23 @@ class SqlStatement:
 
 @dataclass
 class MapperFile:
-    namespace: str
+    namespace: str  # iBatis는 비어 있을 수 있다 (useStatementNamespaces=false)
     header_comment: str | None
     statements: list[SqlStatement]
+    flavor: str = "mybatis"  # mybatis, ibatis
 
 
 def parse_mapper(text: str) -> MapperFile | None:
     ns = _NAMESPACE.search(text)
+    flavor = "mybatis"
+    namespace = ns.group(1) if ns else ""
     if ns is None:
-        return None
+        ns = _SQLMAP.search(text)
+        if ns is None:
+            return None
+        flavor = "ibatis"
+        attr = _SQLMAP_NAMESPACE.search(ns.group(1))
+        namespace = attr.group(1) if attr else ""
     header = _XML_COMMENT.search(text[: ns.start()])
     fragments = {m.group(1): m.group(2) for m in _SQL_FRAGMENT.finditer(text)}
     statements = []
@@ -58,9 +72,14 @@ def parse_mapper(text: str) -> MapperFile | None:
             continue
         body = _expand_includes(m.group(3), fragments)
         sql = _clean_sql(body)
+        kind = m.group(1).lower()
+        if kind in ("statement", "procedure"):  # iBatis: 본문 첫 단어로 종류를 정한다
+            first = _FIRST_WORD.match(sql)
+            word = first.group(1).lower() if first else ""
+            kind = word if word in ("select", "insert", "update", "delete", "merge") else "call"
         statements.append(
             SqlStatement(
-                kind=m.group(1).lower(),
+                kind=kind,
                 id=id_match.group(1),
                 line=text.count("\n", 0, m.start()) + 1,
                 sql=sql,
@@ -68,9 +87,10 @@ def parse_mapper(text: str) -> MapperFile | None:
             )
         )
     return MapperFile(
-        namespace=ns.group(1),
+        namespace=namespace,
         header_comment=header.group(1).strip() if header else None,
         statements=statements,
+        flavor=flavor,
     )
 
 

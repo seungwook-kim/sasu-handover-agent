@@ -2,9 +2,9 @@
 
 떠나는 개발자에게 무엇을 물어야 할지 코드 분석으로 먼저 찾아 주는 SI 인수인계 에이전트입니다. 받은 답변을 코드 위치에 연결해 두고, 신규 투입자의 "왜?"에 근거와 함께 답합니다.
 
-**Java(Spring · MyBatis · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
+**Java(Spring · MyBatis · iBatis · JPA · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
 
-> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 97개.
+> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 104개.
 
 ![경로 추적 화면](docs/images/web-trace.jpg)
 
@@ -77,6 +77,21 @@ claude plugin install sasu@sasu
 도구 목록과 MCP만 붙이는 방법은 [설치 안내](docs/install.md#5-에이전트에-연결-claude-code-플러그인mcp)에 있습니다.
 
 Claude Code에 붙여 "게시판 글 목록 화면은 어떤 테이블을 읽고, 그중 여러 모듈이 같이 쓰는 건?"이라고 물었을 때, 에이전트가 `trace_url`과 `project_overview`를 스스로 골라 불러 테이블 8개와 공유 테이블 3개(COMVNUSERMASTER 24개 모듈 등)를 답했습니다.
+
+### Java 데이터 접근 방식
+
+SI 프로젝트는 세대마다 SQL을 부르는 방식이 다릅니다. 사수는 다음을 모두 테이블까지 잇습니다.
+
+| 방식 | 코드 | 잇는 방법 |
+| --- | --- | --- |
+| MyBatis (문자열 ID) | `selectList("BBSArticle.selectArticleList", vo)` | Mapper XML의 `namespace.id` |
+| iBatis | `list("selectBoardList", vo)` + `<sqlMap>` | 네임스페이스가 없어도 하나뿐인 ID면 잇는다. `<isNotEmpty>`·`<statement>`도 읽음 |
+| MyBatis 매퍼 인터페이스 | `memberMapper.selectMembers()` | XML `namespace`가 인터페이스 이름, `id`가 메서드 이름 |
+| MyBatis 어노테이션 | `@Select("SELECT … FROM TB_NOTICE")` | 메서드에 붙은 SQL |
+| JPA (Spring Data) | `orderRepository.save(o)`, `findByStatus(…)`, `@Query` | `JpaRepository<Order, …>`의 엔티티 → `@Table` 또는 기본 이름(`OrderItem` → `ORDER_ITEM`). 상속 메서드(save·findById·deleteById)는 이름으로 조회·저장·삭제를 정하고, JPQL의 엔티티 이름은 테이블로 바꾼다 |
+| JDBC·JPQL 문자열 | `jdbcTemplate.update("INSERT INTO …")`, `em.createQuery("select i from OrderItem i")` | 코드 안의 SQL 모양 문자열 (로그 문구는 거른다) |
+
+eGovFrame에서는 MyBatis 외에 `SmsBasicDAO`가 JDBC로 직접 쓰는 SQL 7개를 새로 찾았습니다.
 
 ### Python 프로젝트
 

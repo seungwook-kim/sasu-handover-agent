@@ -106,6 +106,7 @@ def link(conn: sqlite3.Connection) -> LinkStats:
                 stats.urls += 1
 
     # 2. 호출 해석
+    calls_resolved: list[tuple] = []  # (호출한 메서드, 호출, 대상 클래스들) — JPA 상속 메서드·짧은 ID 연결에 쓴다
     for call in conn.execute("SELECT * FROM calls"):
         caller = call["method_id"]
         class_id = methods[caller]["class_id"]
@@ -142,6 +143,7 @@ def link(conn: sqlite3.Connection) -> LinkStats:
         else:
             targets = []
 
+        calls_resolved.append((caller, call, targets))
         linked = False
         for target_class in targets:
             for callee in methods_by_class[target_class].get(call["callee"], []):
@@ -182,6 +184,11 @@ def link(conn: sqlite3.Connection) -> LinkStats:
             elif value and "/" in value:
                 view = value.lstrip("/") + VIEW_SUFFIX
                 edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None, None))
+
+    # 3-1. iBatis 짧은 ID, MyBatis 매퍼 인터페이스·@Select, JPA 저장소, 코드 안 SQL 문자열
+    from sasu.linker_java_data import link_java_data  # indexer를 가져오므로 순환 import를 피해 여기서
+
+    link_java_data(conn, edges, classes, methods, methods_by_class, statements, python_classes, calls_resolved)
 
     # 4. Python: 라우터 접두어·include, import·self·이름 추정 호출, ORM·SQL, 템플릿
     from sasu.linker_python import link_python  # linker_python이 normalize_url을 가져가므로 여기서 import
