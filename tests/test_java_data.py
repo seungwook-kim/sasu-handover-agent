@@ -185,3 +185,59 @@ def test_log_messages_are_not_sql():
     assert sql_kind("update 완료: count={}, elapsed={}") is None
     assert sql_kind("INSERT INTO TB_LOG (MSG) VALUES (?)") == "insert"
     assert sql_kind("WITH x AS (SELECT 1 FROM DUAL) SELECT * FROM x") == "select"
+
+
+# ── 공개 프로젝트로 써 보며 찾은 것 (spring-petclinic, mybatis/jpetstore-6) ──
+FIELD = {
+    "src/main/java/demo/owner/OwnerController.java": """
+package demo.owner;
+@Controller
+class OwnerController {
+    private static final String VIEWS_FORM = "owners/createOrUpdateOwnerForm";
+    private final OwnerRepository owners;
+    @GetMapping("/owners/new")
+    public String initCreationForm() { return VIEWS_FORM; }
+    @GetMapping("/")
+    public String welcome() { return "welcome"; }
+    @GetMapping("/owners/find")
+    public String find() { return "owners/findOwners"; }
+}
+""",
+    "src/main/java/demo/owner/OwnerRepository.java": """
+package demo.owner;
+public interface OwnerRepository extends JpaRepository<Owner, Integer> {}
+""",
+    "src/main/resources/templates/owners/createOrUpdateOwnerForm.html": "<form></form>",
+    "src/main/resources/templates/owners/findOwners.html": '<a th:href="@{/owners/new}">Add Owner</a>',
+    "src/main/resources/templates/welcome.html": "<h2>Welcome</h2>",
+    "src/site/xdoc/index.xml": '<source><mapper namespace="doc.Example"><select id="x">SELECT 1 FROM T</select></mapper></source>',
+}
+
+
+def test_field_findings(tmp_path):
+    repo = tmp_path / "repo"
+    for rel, content in FIELD.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    conn = db.connect(tmp_path / "sasu.db")
+    index_repository(conn, repo, dialect="oracle")
+
+    views = {u: [n.label for n in trace_url(conn, u).walk() if n.kind == "view"]
+             for u in ("/owners/new", "/", "/owners/find")}
+    assert views["/owners/new"] == ["src/main/resources/templates/owners/createOrUpdateOwnerForm.html"]  # 상수 반환
+    assert views["/"] == ["src/main/resources/templates/welcome.html"]  # '/' 없는 뷰 이름
+    assert conn.execute("SELECT stereotype FROM classes WHERE name = 'OwnerRepository'").fetchone()[0] == "Repository"
+    assert conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0] == 0  # src/site 문서의 예제 Mapper는 빼고
+
+    from sasu.analysis.unused import find_unused
+
+    unused = [f.name for f in find_unused(conn).url]
+    assert unused == ["/owners/find"]  # /owners/new는 Thymeleaf @{…}로 불리고, /는 첫 화면이라 빠진다
+
+
+def test_jsp_context_path_links():
+    from sasu.parsers.web_refs import extract_refs
+
+    text = '<a href="${pageContext.request.contextPath}/catalog/viewCategory?categoryId=FISH">Fish</a>'
+    assert [r.value for r in extract_refs(text) if r.kind == "url"] == ["/catalog/viewCategory"]

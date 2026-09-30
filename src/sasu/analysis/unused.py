@@ -169,8 +169,8 @@ def _unused_urls(conn: sqlite3.Connection, literal_blob: str) -> list[Finding]:
     findings = []
     for r in rows:
         url = r["url"]
-        if url in referenced or _in_text(url, literal_blob) or "{" in url:
-            continue
+        if url in referenced or _in_text(url, literal_blob) or "{" in url or url == "/":
+            continue  # "/"는 브라우저가 처음 여는 주소라 부르는 곳이 없어도 쓰인다
         findings.append(
             Finding(
                 kind="url",

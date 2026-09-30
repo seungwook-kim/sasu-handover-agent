@@ -45,6 +45,8 @@ def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> Inde
     roots = python_roots(repo)
     for path in _walk(repo):
         rel = path.relative_to(repo).as_posix()
+        if f"/{rel}".find("/src/site/") >= 0:
+            continue  # Maven 사이트 문서: 설명용 예제 Mapper XML이 들어 있어 실제 코드로 착각한다
         suffix = path.suffix.lower()
         if suffix == ".java":
             _index_java(conn, path, rel, stats)

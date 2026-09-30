@@ -62,6 +62,7 @@ class JavaField:
     doc: str | None = None  # /** 게시물 아이디 */ 같은 필드 주석 (한국어 ↔ 식별자 용어 사전 재료)
     # Python: router = APIRouter(prefix="/users") 처럼 호출로 만든 값의 인자 (키 → 문자열 값들)
     call_args: dict[str, list[str]] = field(default_factory=dict)
+    constant: str | None = None  # String VIEWS_X = "owners/form"; 처럼 문자열로 초기화한 값
 
     @property
     def bean_name(self) -> str | None:
@@ -123,6 +124,7 @@ class JavaMethod:
     doc: str | None
     calls: list[Call] = field(default_factory=list)
     returned_strings: list[str] = field(default_factory=list)
+    returned_names: list[str] = field(default_factory=list)  # return VIEWS_X; (클래스 상수로 바꿔 넣는다)
     complexity: int = 1
     empty_catches: list[EmptyCatch] = field(default_factory=list)
     string_literals: list[tuple[str, int]] = field(default_factory=list)
@@ -289,6 +291,12 @@ def _parse_class(node: Node, source: bytes, package: str, prefix: str) -> list[J
         doc=_preceding_doc(node, source),
         repository_entity=repository_entity,
     )
+    # return VIEWS_OWNER_FORM; → 클래스 상수의 문자열("owners/createOrUpdateOwnerForm")을 반환값으로
+    constants = {f.name: f.constant for f in fields if f.constant is not None}
+    for m in methods:
+        m.returned_strings += [constants[n] for n in m.returned_names if n in constants]
+    if cls.repository_entity and cls.explicit_stereotype is None and not cls.stereotype:
+        cls.explicit_stereotype = "Repository"  # Spring Data 저장소 인터페이스는 @Repository 없이도 DAO다
     if cls.annotation("Entity"):
         table = cls.annotation("Table")
         # @Table(name=...)이 없으면 Spring Boot 기본 규칙: OrderItem → ORDER_ITEM
@@ -328,15 +336,17 @@ def _parse_field(node: Node, source: bytes) -> list[JavaField]:
     result = []
     for child in node.named_children:
         if child.type == "variable_declarator":
-            result.append(
-                JavaField(
-                    name=_text(child.child_by_field_name("name"), source),
-                    type_name=type_name,
-                    annotations=annotations,
-                    line=node.start_point.row + 1,
-                    doc=doc,
-                )
+            value = child.child_by_field_name("value")
+            field_ = JavaField(
+                name=_text(child.child_by_field_name("name"), source),
+                type_name=type_name,
+                annotations=annotations,
+                line=node.start_point.row + 1,
+                doc=doc,
             )
+            if value is not None and value.type == "string_literal":
+                field_.constant = _string_value(value, source)
+            result.append(field_)
     return result
 
 
@@ -462,6 +472,8 @@ def _scan_body(body: Node, source: bytes, method: JavaMethod) -> None:
             value = next(iter(n.named_children), None)
             if value is not None and value.type == "string_literal":
                 method.returned_strings.append(_string_value(value, source))
+            elif value is not None and value.type == "identifier":
+                method.returned_names.append(_text(value, source))
         elif t == "catch_clause":
             block = n.child_by_field_name("body")
             if block is not None and not any(

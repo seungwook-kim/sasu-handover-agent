@@ -16,6 +16,10 @@ from dataclasses import dataclass
 _URL = re.compile(r"(/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-{}]+)*\.do)\b")
 # .do가 없는 REST 스타일 경로: url: '/twitter/tweets', fetch("/api/x") 처럼 따옴표 안의 절대 경로
 _QUOTED_PATH = re.compile(r"""["'`](/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)/?["'`?]""")
+# JSP: ${pageContext.request.contextPath}/catalog/viewCategory?categoryId=FISH (.do 없는 경로)
+_CONTEXT_PATH_URL = re.compile(r"\$\{[^}]*contextPath\}(/[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)*)")
+# Thymeleaf 링크 식: th:href="@{/owners/new}", @{/owners/{id}/edit(id=${o.id})}
+_THYMELEAF_URL = re.compile(r"@\{\s*(/(?:[A-Za-z0-9_\-./]|\{[A-Za-z0-9_]+\})*)")
 # 설정 XML의 SpEL: #{egovPasswordResolver.resolvePassword('...')}
 _SPEL_CALL = re.compile(r"#\{\s*[A-Za-z_][\w.]*\.([A-Za-z_]\w*)\s*\(")
 _JSP_PATH = re.compile(r"([A-Za-z0-9_\-/.]*?/?[A-Za-z0-9_\-]+\.jsp)\b")
@@ -54,6 +58,12 @@ def extract_refs(text: str, *, methods: bool = False) -> list[Ref]:
     for m in _QUOTED_PATH.finditer(text):
         if not m.group(1).endswith(".do"):
             refs.append(Ref("url", m.group(1), _line_of(line_starts, m.start())))
+    for m in _CONTEXT_PATH_URL.finditer(text):
+        refs.append(Ref("url", m.group(1), _line_of(line_starts, m.start())))
+    for m in _THYMELEAF_URL.finditer(text):
+        path = m.group(1).rstrip("/")
+        if len(path) > 1:
+            refs.append(Ref("url", path, _line_of(line_starts, m.start())))
     for m in _INCLUDE.finditer(text):
         target = next(g for g in m.groups() if g)
         refs.append(Ref("include", target, _line_of(line_starts, m.start())))

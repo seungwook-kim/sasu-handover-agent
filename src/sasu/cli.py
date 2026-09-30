@@ -297,6 +297,9 @@ def questions(
     conn = _open_db()
     total, new, updated, stale = refresh_questions(conn)
     console.print(f"질문 {total}개 (새 질문 {new}, 갱신 {updated}, 코드가 바뀌어 사라진 질문 {stale})")
+    if total == 0:
+        console.print("[dim]코드만 봐서는 이유를 모를 곳(드문 업무 코드 분기, TODO·주의 주석, 끊어진 쿼리, 복잡한 분기, "
+                      "복사한 코드)을 찾지 못했어요. 작고 깔끔한 코드이거나, 아직 지원하지 않는 방식일 수 있어요.[/dim]")
 
     rows = conn.execute(
         "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id LIMIT ?", (top,)
@@ -689,11 +692,11 @@ def map_(module: str = typer.Argument(None, help="모듈 이름 (예: cop.bbs). 
     table.add_column("테이블", style="bold")
     table.add_column("모듈 수", justify="right")
     table.add_column("SQL 수", justify="right")
-    table.add_column("조회/등록/수정/삭제")
+    table.add_column("조회/등록/수정/삭제/저장")  # 저장: JPA save·MERGE INTO (등록 또는 수정)
     table.add_column("쓰는 모듈", style="dim")
     for t in ov.tables:
         k = t.kinds
-        crud = f"{k.get('select', 0)}/{k.get('insert', 0)}/{k.get('update', 0)}/{k.get('delete', 0)}"
+        crud = "/".join(str(k.get(kind, 0)) for kind in ("select", "insert", "update", "delete", "merge"))
         mods = ", ".join(t.modules[:6]) + (f" 외 {len(t.modules) - 6}" if len(t.modules) > 6 else "")
         table.add_row(t.name, str(len(t.modules)), str(t.statements), crud, mods)
     console.print(table)

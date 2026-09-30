@@ -294,11 +294,11 @@ views.overview = async function () {
   if (data.tables.length) {
     parts.push(h("h3", {}, "여러 모듈이 함께 쓰는 테이블", h("span", { class: "muted small" }, " — 바꾸면 영향이 큽니다")));
     parts.push(h("div", { class: "card table-wrap" }, h("table", { class: "grid" },
-      h("thead", {}, h("tr", {}, ["테이블", "모듈 수", "SQL 수", "조회", "등록", "수정", "삭제", "쓰는 모듈"].map((c, i) =>
-        h("th", { class: i && i < 7 ? "num" : null }, c)))),
+      h("thead", {}, h("tr", {}, ["테이블", "모듈 수", "SQL 수", "조회", "등록", "수정", "삭제", "저장", "쓰는 모듈"].map((c, i) =>
+        h("th", { class: i && i < 8 ? "num" : null }, c)))),
       h("tbody", {}, data.tables.map((t) => h("tr", {},
         h("td", {}, h("b", { class: "mono" }, t.name)), h("td", { class: "num" }, t.modules.length), h("td", { class: "num" }, t.statements),
-        ...["select", "insert", "update", "delete"].map((k) => h("td", { class: "num" }, t.kinds[k] || 0)),
+        ...["select", "insert", "update", "delete", "merge"].map((k) => h("td", { class: "num" }, t.kinds[k] || 0)),
         h("td", { class: "small muted" }, t.modules.slice(0, 6).join(", ") + (t.modules.length > 6 ? ` 외 ${t.modules.length - 6}` : ""))))),
     )));
   }
@@ -384,7 +384,10 @@ function renderQuestions() {
   if (!items.length) {
     const msg = s.status === "open" && d.total && !needle && !s.kind
       ? h("div", { class: "card empty" }, h("b", {}, "모든 질문에 답했어요 🎉"), "\"답변함\"에서 받은 답을 다시 볼 수 있습니다.")
-      : h("div", { class: "card empty" }, "조건에 맞는 질문이 없어요.");
+      : d.total === 0
+        ? h("div", { class: "card empty" }, h("b", {}, "물어볼 만한 곳을 찾지 못했어요"),
+          "드문 업무 코드 분기, TODO·주의 주석, 끊어진 쿼리, 복잡한 분기, 복사한 코드가 없습니다. 작고 깔끔한 코드이거나 아직 지원하지 않는 방식일 수 있어요.")
+        : h("div", { class: "card empty" }, "조건에 맞는 질문이 없어요.");
     list.replaceChildren(msg);
     return;
   }

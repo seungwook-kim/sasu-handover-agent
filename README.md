@@ -4,7 +4,7 @@
 
 **Java(Spring · MyBatis · iBatis · JPA · JSP)와 Python(FastAPI · Flask · Django)** 프로젝트를 분석합니다.
 
-> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 104개.
+> **상태: 개발 중 (다듬는 단계).** 코드 분석(경로 추적, 프로젝트 지도, 공통화 진단, 불필요한 소스, 기존 동작 목록), 인수인계 질문 생성·엑셀 질문지, RAG 기반 "왜?" 질의응답, 웹 화면, 에이전트 연결(MCP·Claude Code 플러그인), 설치 꾸러미까지 동작합니다. 테스트 106개.
 
 ![경로 추적 화면](docs/images/web-trace.jpg)
 
@@ -92,6 +92,8 @@ SI 프로젝트는 세대마다 SQL을 부르는 방식이 다릅니다. 사수�
 | JDBC·JPQL 문자열 | `jdbcTemplate.update("INSERT INTO …")`, `em.createQuery("select i from OrderItem i")` | 코드 안의 SQL 모양 문자열 (로그 문구는 거른다) |
 
 eGovFrame에서는 MyBatis 외에 `SmsBasicDAO`가 JDBC로 직접 쓰는 SQL 7개를 새로 찾았습니다.
+
+개발 중에 보지 않은 공개 프로젝트(spring-petclinic: JPA·Thymeleaf, mybatis/jpetstore-6: 매퍼 인터페이스)로 써 보고 막힌 곳 8가지를 고쳤습니다. [처음 보는 프로젝트로 써 보기](docs/field-test.md)에 정리했습니다.
 
 ### Python 프로젝트
 

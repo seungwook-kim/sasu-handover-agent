@@ -59,6 +59,12 @@ def link(conn: sqlite3.Connection) -> LinkStats:
         for r in conn.execute("SELECT id, path FROM files WHERE kind = 'jsp'")
         if VIEW_PREFIX in r["path"]
     }
+    # Spring Boot + Thymeleaf: 뷰 이름 owners/findOwners → src/main/resources/templates/owners/findOwners.html
+    template_files = {
+        r["path"].split("templates/", 1)[1]: (r["id"], r["path"])
+        for r in conn.execute("SELECT id, path FROM files WHERE kind = 'template' AND path LIKE '%.html'")
+        if "templates/" in r["path"] and not r["path"].endswith(".py")
+    }
 
     def resolve_type(type_name: str) -> list[int]:
         found = []
@@ -181,9 +187,16 @@ def link(conn: sqlite3.Connection) -> LinkStats:
                 target = value.split(":", 1)[1].split("?")[0]
                 if target.startswith("/"):
                     edges.add(("method", mid, "url", None, normalize_url(target), None, None))
-            elif value and "/" in value:
-                view = value.lstrip("/") + VIEW_SUFFIX
-                edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None, None))
+            elif value and ("/" in value or value + ".html" in template_files):
+                name = value.lstrip("/")
+                view = name + VIEW_SUFFIX
+                template = template_files.get(name + ".html")
+                if view not in jsp_files and (template or (template_files and not jsp_files)):
+                    # JSP가 아니라 Thymeleaf 템플릿을 쓰는 프로젝트
+                    edges.add(("method", mid, "view", template[0] if template else None,
+                               template[1] if template else f"templates/{name}.html", None, None))
+                else:
+                    edges.add(("method", mid, "view", jsp_files.get(view), VIEW_PREFIX + view, None, None))
 
     # 3-1. iBatis 짧은 ID, MyBatis 매퍼 인터페이스·@Select, JPA 저장소, 코드 안 SQL 문자열
     from sasu.linker_java_data import link_java_data  # indexer를 가져오므로 순환 import를 피해 여기서
