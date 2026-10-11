@@ -8,7 +8,7 @@
 
 ![경로 추적 → 코드 보기 → 떠난 개발자에게 보낼 질문](docs/images/demo-trace-questions.gif)
 
-문제 정의, 설계 결정과 이유, 결과 수치, 한계를 한 장으로 정리한 [프로젝트 요약](docs/portfolio.md)이 있습니다.
+문제 정의, 설계 결정과 이유, 결과 수치, 한계를 한 장으로 정리한 [프로젝트 요약](docs/portfolio.md)이 있습니다. 요구사항·설계·데이터 모델은 [PRD](docs/prd.md) · [SDD](docs/sdd.md) · [ERD](docs/erd.md)에 정리했습니다.
 
 ## 사용해 보기
 
