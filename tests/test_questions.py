@@ -131,6 +131,14 @@ def test_excel_round_trip(setup):
     assert row["answered_by"] == "김선배"
 
 
+def test_excel_export_without_questions(setup):
+    """질문이 하나도 없는 프로젝트(spring-petclinic 같은)도 빈 질문지를 내려받을 수 있다."""
+    conn, _, tmp_path = setup
+    sheet = tmp_path / "empty.xlsx"
+    assert export_sheet(conn, sheet) == 0
+    assert load_workbook(sheet).active.max_row == 1
+
+
 def test_note_tag_ignores_business_terms():
     src = """class A { void m() {
         // 임시 비밀번호를 생성한다

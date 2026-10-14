@@ -48,9 +48,10 @@ def export_sheet(conn: sqlite3.Connection, path: Path, include_answered: bool = 
             cell = ws.cell(row=i + 1, column=col, value=value)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(row=i + 1, column=9).fill = answer_fill
-    status_rule = DataValidation(type="list", formula1='"미답변,답변 완료,건너뜀"', allow_blank=True)
-    ws.add_data_validation(status_rule)
-    status_rule.add(f"K2:K{len(rows) + 1}")
+    if rows:  # 질문이 없으면 K2:K1 같은 거꾸로 된 범위가 되어 openpyxl이 거부한다
+        status_rule = DataValidation(type="list", formula1='"미답변,답변 완료,건너뜀"', allow_blank=True)
+        ws.add_data_validation(status_rule)
+        status_rule.add(f"K2:K{len(rows) + 1}")
     ws.column_dimensions["L"].hidden = True
     ws.freeze_panes = "E2"
     ws.auto_filter.ref = f"A1:K{len(rows) + 1}"
