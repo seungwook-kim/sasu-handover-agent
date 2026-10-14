@@ -86,15 +86,15 @@ BASE = {
 }
 
 KIND_LABEL = {
-    "broken_sql": "끊어진 쿼리",
-    "dynamic_sql": "동적 쿼리 ID",
+    "broken_sql": "없는 SQL 호출",
+    "dynamic_sql": "동적 SQL ID",
     "note": "주의 주석",
-    "magic_value": "특정 값 분기",
-    "external_bean": "저장소 밖 설정",
+    "magic_value": "업무 코드 분기",
+    "external_bean": "설정에만 있는 빈",
     "empty_catch": "무시하는 예외",
     "copied_code": "복사한 코드",
     "complex": "복잡한 분기",
-    "unused_sql": "안 쓰는 SQL",
+    "unused_sql": "미사용 SQL",
 }
 
 

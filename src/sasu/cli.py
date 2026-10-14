@@ -243,11 +243,11 @@ def stats() -> None:
 
 
 _UNUSED_TITLES = {
-    "broken_sql": "끊어진 쿼리 참조 (코드가 부르는데 Mapper에 없음)",
-    "sql": "부르는 곳이 없는 SQL",
-    "url": "부르는 화면을 못 찾은 URL",
-    "method": "부르는 곳이 없는 메서드 (Service·DAO·Component)",
-    "jsp": "쓰이지 않는 JSP",
+    "broken_sql": "없는 SQL 호출 (코드가 부르는데 Mapper에 없음)",
+    "sql": "미사용 SQL",
+    "url": "부르는 곳 못 찾은 URL",
+    "method": "미사용 메서드 (Service·DAO·Component)",
+    "jsp": "미사용 JSP",
 }
 
 
@@ -256,7 +256,7 @@ def unused(
     kind: str = typer.Option(None, "--kind", help="broken_sql, sql, url, method, jsp 중 하나만 보기"),
     limit: int = typer.Option(15, "--limit", help="종류별로 보여 줄 개수 (0이면 전부)"),
 ) -> None:
-    """부르는 곳이 없거나 연결이 끊어진 SQL·URL·메서드·JSP를 찾는다."""
+    """없는 SQL 호출과 부르는 곳을 못 찾은 SQL·URL·메서드·JSP를 찾는다."""
     from sasu.analysis.unused import find_unused
 
     report = find_unused(_open_db())
@@ -289,7 +289,7 @@ def questions(
     top: int = typer.Option(20, "--top", help="보여 줄 질문 수"),
     export: Path = typer.Option(None, "--export", help="엑셀로 내보낼 경로 (예: 인수인계질문.xlsx)"),
 ) -> None:
-    """떠나는 개발자에게 물어야 할 인수인계 질문을 만든다. 이미 받은 답변은 그대로 둔다."""
+    """전임자에게 물어야 할 인수인계 질문을 만든다. 이미 받은 답변은 그대로 둔다."""
     from sasu.analysis.questions import KIND_LABEL
     from sasu.handover import refresh_questions
     from sasu.handover_sheet import export_sheet
@@ -298,14 +298,14 @@ def questions(
     total, new, updated, stale = refresh_questions(conn)
     console.print(f"질문 {total}개 (새 질문 {new}, 갱신 {updated}, 코드가 바뀌어 사라진 질문 {stale})")
     if total == 0:
-        console.print("[dim]코드만 봐서는 이유를 모를 곳(드문 업무 코드 분기, TODO·주의 주석, 끊어진 쿼리, 복잡한 분기, "
+        console.print("[dim]코드만 봐서는 이유를 모를 곳(드문 업무 코드 분기, TODO·주의 주석, 없는 SQL 호출, 복잡한 분기, "
                       "복사한 코드)을 찾지 못했어요. 작고 깔끔한 코드이거나, 아직 지원하지 않는 방식일 수 있어요.[/dim]")
 
     rows = conn.execute(
         "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id LIMIT ?", (top,)
     ).fetchall()
     for i, q in enumerate(rows, 1):
-        mark = "[green]답변함[/green]" if q["status"] == "answered" else ""
+        mark = "[green]답변 완료[/green]" if q["status"] == "answered" else ""
         console.print(
             f"\n[bold]{i}. [dim]Q{q['id']}[/dim] {q['question']}[/bold] {mark}\n"
             f"   [cyan]{KIND_LABEL.get(q['kind'], q['kind'])}[/cyan] · {q['target'] or '-'} "
@@ -454,7 +454,7 @@ def answer_cmd(
 
 @app.command()
 def draft(question_id: str = typer.Argument(..., help="질문 번호 (예: Q12)")) -> None:
-    """떠난 개발자에게 보낼 질문 메시지 초안을 만든다. 한 번에 정확히 묻도록 코드 위치와 근거를 담는다."""
+    """전임자에게 보낼 질문 메시지 초안을 만든다. 한 번에 정확히 묻도록 코드 위치와 묻는 이유를 담는다."""
     from sasu.handover import draft_message
 
     qid = int(question_id.lstrip("Qq"))
@@ -577,7 +577,7 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="0.0.0.0이면 같은 망의 다른 PC에서도 열린다"),
     no_browser: bool = typer.Option(False, "--no-browser", help="브라우저를 자동으로 열지 않는다"),
 ) -> None:
-    """웹 화면을 연다: 한눈에 보기, 인수인계 질문, 물어보기, 경로 추적, 정리하기."""
+    """웹 화면을 연다: 한눈에 보기, 인수인계 질문, 경로 추적, 사수에게 묻기, 고도화 준비."""
     import threading
     import webbrowser
 

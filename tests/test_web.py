@@ -44,6 +44,10 @@ def test_index_page_and_static_files(client):
     assert page.status_code == 200 and "사수" in page.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
+    # 번들한 글꼴은 인터넷 없이 이 서버에서 나가고, 글꼴 MIME으로 나간다
+    font = client.get("/fonts/Pretendard-Regular.subset.woff2")
+    assert font.status_code == 200 and font.headers["content-type"] == "font/woff2"
+    assert client.get("/favicon.svg").status_code == 200
 
 
 def test_overview_and_trace(client):

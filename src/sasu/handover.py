@@ -45,17 +45,24 @@ def save_answer(conn: sqlite3.Connection, question_id: int, text: str, by: str |
 
 
 def draft_message(conn: sqlite3.Connection, question_id: int) -> str | None:
-    """떠난 개발자에게 보낼 질문 메시지. 한 번에 정확히 묻도록 코드 위치와 근거를 담는다."""
+    """전임자에게 보낼 질문 메시지. 바쁜 사람이 바로 보게 질문을 맨 위에 두고 위치·코드·묻는 이유를 담는다.
+    "■ 질문"·"■ 코드:" 머리표는 웹 화면(코드 줄 넣기 토글)과 테스트가 쓴다."""
     q = conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
     if q is None:
         return None
     project = meta(conn, "repo_path").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    location = f"{q['file_path']}:{q['line']}" if q["file_path"] else "-"
+    if q["file_path"]:
+        parts = q["file_path"].replace("\\", "/").split("/")
+        location = f"{'/'.join(parts[-3:])}:{q['line']}"  # 패키지 끝 두 단계/파일명:줄
+    else:
+        location = "-"
     return (
-        f"안녕하세요, {project} 인수인계를 받은 담당자입니다. 코드 한 곳만 여쭤보고 싶어 연락드렸습니다.\n\n"
+        f"안녕하세요, {project} 업무를 이어받은 [이름]입니다.\n"
+        "코드 한 곳만 여쭤봐도 될까요?\n\n"
+        f"■ 질문: {q['question']}\n"
         f"■ 위치: {q['target'] or '-'} ({location})\n"
         + (f"■ 코드: {q['code']}\n" if q["code"] else "")
-        + f"■ 질문: {q['question']}\n"
-        f"■ 제가 확인한 것: {q['why']}\n\n"
-        "짧게라도 답을 주시면 인수인계 기록에 남겨 다음 담당자도 볼 수 있게 하겠습니다. 감사합니다."
+        + f"■ 묻는 이유: {q['why']}\n\n"
+        '한두 줄로 답해 주셔도 충분합니다. 기억나지 않으시면 "모름"이라고만 주셔도 됩니다.\n'
+        "주신 답변은 코드 위치에 기록해 다음 담당자도 볼 수 있게 하겠습니다. 감사합니다."
     )

@@ -15,11 +15,12 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from sasu.analysis.questions import KIND_LABEL
 
 COLUMNS = [
-    ("번호", 6), ("우선순위", 9), ("종류", 13), ("질문", 60), ("이유(코드 근거)", 50),
+    ("번호", 6), ("우선순위", 9), ("종류", 13), ("질문", 60), ("묻는 이유", 50),
     ("위치", 45), ("대상", 35), ("코드", 50), ("답변", 60), ("답한 사람", 12), ("상태", 10), ("key", 10),
 ]
-_STATUS_LABEL = {"open": "미답변", "answered": "답변함", "skipped": "건너뜀"}
-_LABEL_STATUS = {v: k for k, v in _STATUS_LABEL.items()}
+_STATUS_LABEL = {"open": "미답변", "answered": "답변 완료", "skipped": "건너뜀"}
+# 예전 질문지의 "답변함"도 답변 완료로 받는다
+_LABEL_STATUS = {**{v: k for k, v in _STATUS_LABEL.items()}, "답변함": "answered"}
 
 
 def export_sheet(conn: sqlite3.Connection, path: Path, include_answered: bool = True) -> int:
@@ -47,7 +48,7 @@ def export_sheet(conn: sqlite3.Connection, path: Path, include_answered: bool = 
             cell = ws.cell(row=i + 1, column=col, value=value)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(row=i + 1, column=9).fill = answer_fill
-    status_rule = DataValidation(type="list", formula1='"미답변,답변함,건너뜀"', allow_blank=True)
+    status_rule = DataValidation(type="list", formula1='"미답변,답변 완료,건너뜀"', allow_blank=True)
     ws.add_data_validation(status_rule)
     status_rule.add(f"K2:K{len(rows) + 1}")
     ws.column_dimensions["L"].hidden = True

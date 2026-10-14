@@ -4,6 +4,7 @@
 요청마다 지금 프로젝트의 분석 파일을 새로 연다 (sasu use로 바꾸면 바로 반영).
 """
 
+import mimetypes
 import sqlite3
 import tempfile
 from dataclasses import asdict
@@ -23,13 +24,14 @@ from sasu.trace import TraceNode, coverage, find_urls, trace_url
 STATIC_DIR = Path(__file__).parent / "static"
 _CODE_CONTEXT = 3  # 코드 보기에서 앞뒤로 더 보여 줄 줄 수
 _MAX_CODE_LINES = 400
+mimetypes.add_type("font/woff2", ".woff2")  # Python mimetypes에 없어 octet-stream으로 나가던 것
 
 _UNUSED_TITLES = {
-    "broken_sql": "끊어진 쿼리 참조",
-    "sql": "부르는 곳이 없는 SQL",
-    "url": "부르는 화면을 못 찾은 URL",
-    "method": "부르는 곳이 없는 메서드",
-    "jsp": "쓰이지 않는 JSP",
+    "broken_sql": "없는 SQL 호출",
+    "sql": "미사용 SQL",
+    "url": "부르는 곳 못 찾은 URL",
+    "method": "미사용 메서드",
+    "jsp": "미사용 JSP",
 }
 _UNUSED_HELP = {
     "broken_sql": "코드가 부르는데 Mapper에 없는 쿼리. 실행하면 오류가 날 수 있습니다.",
