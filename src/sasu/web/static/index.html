@@ -70,51 +70,49 @@
 <symbol id="i-git-branch" viewBox="0 0 24 24"><path d="M15 6a9 9 0 0 0-9 9V3"/> <circle cx="18" cy="6" r="3"/> <circle cx="6" cy="18" r="3"/></symbol>
 <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/> <path d="M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71"/> <path d="M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/> <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
   </svg>
 
   <a class="skip-link" href="#main" id="skip-link">본문으로 건너뛰기</a>
   <header class="top">
-    <a class="brand" href="#overview" aria-label="사수 첫 화면">
+    <a class="brand" href="#home" aria-label="사수 시작 화면">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <path d="M12 5.5 4.5 25M9.75 11.35 17.5 25M23.5 4.5v23M23.5 15.5H28"/>
       </svg>
       <b>사수</b>
     </a>
     <nav class="tabs" id="tabs" aria-label="화면">
-      <a href="#overview" data-view="overview"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-map"/></svg>한눈에 보기</a>
-      <a href="#questions" data-view="questions"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message-circle-question-mark"/></svg>인수인계 질문<span class="count hidden" id="q-count"></span></a>
+      <a href="#home" data-view="home"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-house"/></svg>시작</a>
       <a href="#trace" data-view="trace" title="콜 트리"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-route"/></svg>경로 추적<span class="sub">콜 트리</span></a>
+      <a href="#questions" data-view="questions"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message-circle-question-mark"/></svg>인수인계 질문<span class="count hidden" id="q-count"></span></a>
       <a href="#ask" data-view="ask"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message-square-quote"/></svg>사수에게 묻기</a>
       <a href="#cleanup" data-view="cleanup"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-brush-cleaning"/></svg>고도화 준비</a>
     </nav>
+    <!-- 머리글 버튼은 프로젝트 선택(분석 기준은 툴팁)과 [보기 설정] 둘뿐 -->
     <div class="tools">
-      <span id="indexed"></span>
       <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-folder-git-2"/></svg>
       <select id="project" aria-label="프로젝트"></select>
-      <button class="btn ghost icon-only" id="bigtext" type="button" aria-pressed="false" aria-label="글자 크게" title="글자 크게 (회의실·빔프로젝터용)"><svg class="icon i20" aria-hidden="true" focusable="false"><use href="#i-a-large-small"/></svg></button>
-      <button class="btn ghost icon-only" id="theme" type="button" aria-label="어둡게 보기" title="어둡게 보기"><svg class="icon i20" aria-hidden="true" focusable="false"><use href="#i-moon"/></svg></button>
+      <div class="menu-wrap">
+        <button class="btn ghost menu-btn" id="view-more" type="button" aria-haspopup="true" aria-expanded="false" title="보기 설정"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-ellipsis"/></svg><span class="lbl">보기 설정</span></button>
+        <div class="card menu hidden">
+          <button type="button" id="theme"></button>
+          <button type="button" id="bigtext" aria-pressed="false" title="회의실·빔프로젝터용"></button>
+        </div>
+      </div>
     </div>
   </header>
 
   <main id="main" tabindex="-1">
+    <section class="view" id="view-home" aria-labelledby="home-title"></section>
+
     <section class="view" id="view-overview" aria-labelledby="overview-title"></section>
 
     <section class="view" id="view-questions">
       <h2>인수인계 질문</h2>
-      <p class="lead">코드만 봐서는 이유를 알 수 없는 곳입니다. 전임자에게 묻고 답변을 적어 두면 코드 위치에 연결되어, 사수에게 물을 때 근거가 됩니다.</p>
-      <div class="qhead">
-        <div class="card pad qprog">
-          <div class="row">
-            <b class="grow big" id="q-progress-text">질문을 불러오는 중…</b>
-            <a class="btn sm" href="/api/questions/export" download><svg class="icon i14" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg>전체 질문지 내려받기</a>
-          </div>
-          <div class="progress" id="q-progressbar" role="progressbar" aria-label="먼저 물을 질문 답변 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="margin-top:8px"><i id="q-progress" style="width:0"></i></div>
-          <p class="note">외부로 보낼 때는 '코드'·'위치' 열을 지우세요. '질문'·'묻는 이유'에도 코드 일부가 남을 수 있으니, 보내기 전에 사내 반출 규정을 확인해 주세요. 열을 지워도 답변은 그대로 가져와요.</p>
-        </div>
-        <div class="card pad">
-          <div class="row" style="margin-bottom:6px"><b class="grow small">종류별</b><span class="muted xs">막대 길이 = 질문 수, 채움 = 답변 완료</span></div>
-          <div class="kinds" id="q-kinds"></div>
-        </div>
+      <p class="lead">코드만 봐서는 이유를 알 수 없는 곳입니다. 질문을 펼쳐 전임자에게 받은 답변을 적으면, 사수에게 물을 때 근거가 됩니다.</p>
+      <div class="qprog-line">
+        <b id="q-progress-text">질문을 불러오는 중…</b>
+        <div class="progress" id="q-progressbar" role="progressbar" aria-label="먼저 물을 질문 답변 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="q-progress" style="width:0"></i></div>
       </div>
       <div class="toolbar" id="q-toolbar">
         <div class="seg" id="q-status" role="group" aria-label="답변 상태">
@@ -123,41 +121,62 @@
           <button type="button" data-status="skipped" aria-pressed="false">건너뜀</button>
           <button type="button" data-status="all" aria-pressed="false">전체</button>
         </div>
-        <select id="q-kind" aria-label="질문 종류"><option value="">모든 종류</option></select>
         <input type="search" id="q-search" placeholder="질문·업무명·클래스·파일 검색 (Enter로 결과로)" aria-label="질문 검색">
-        <a class="btn" id="q-export-visible" href="/api/questions/export" download title="지금 목록에 보이는 질문만 엑셀로 받아요"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg><span id="q-export-visible-text">보이는 질문지 내려받기</span></a>
-        <a class="btn" href="/api/questions/export" download aria-label="전체 질문지 내려받기" title="전체 질문지 내려받기">전체</a>
-        <span class="selbar hidden" id="q-selbar" role="group" aria-label="고른 질문">
-          <a class="btn primary" id="q-export-selected" href="/api/questions/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg><span id="q-export-selected-text">선택한 질문 내려받기</span></a>
-          <button class="btn" type="button" id="q-select-clear"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg>선택 해제</button>
-        </span>
-        <button class="btn" type="button" id="q-import"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-up"/></svg>답변 엑셀 올리기</button>
-        <input type="file" id="q-import-file" accept=".xlsx" class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <!-- 질문지 내려받기·올리기·다시 만들기는 이 메뉴 하나에 -->
         <div class="menu-wrap">
-          <button class="btn icon-only" type="button" id="q-more" aria-label="더 보기" aria-haspopup="true" aria-expanded="false"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-ellipsis"/></svg></button>
-          <div class="card menu hidden" id="q-menu">
+          <button class="btn menu-btn" type="button" id="q-sheet" aria-haspopup="true" aria-expanded="false"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-spreadsheet"/></svg>질문지<svg class="icon i14" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg></button>
+          <div class="card menu wide hidden" id="q-menu">
+            <a href="/api/questions/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg>전체 질문지 내려받기</a>
+            <a id="q-export-visible" href="/api/questions/export" download title="지금 목록에 보이는 질문만 엑셀로 받아요"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg><span id="q-export-visible-text">보이는 질문 내려받기</span></a>
+            <button type="button" id="q-select-mode"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-list-filter"/></svg>골라서 내려받기…</button>
+            <hr>
+            <button type="button" id="q-import"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-up"/></svg>답변 엑셀 올리기</button>
             <button type="button" id="q-refresh"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh-cw"/></svg>질문 다시 만들기</button>
+            <p class="note">외부로 보낼 때는 '코드'·'위치' 열을 지우세요. '질문'·'묻는 이유'에도 코드 일부가 남을 수 있으니, 보내기 전에 사내 반출 규정을 확인해 주세요. 열을 지워도 답변은 그대로 가져와요.</p>
           </div>
         </div>
+        <input type="file" id="q-import-file" accept=".xlsx" class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <!-- 골라서 내려받기를 고르면만 보이는 선택 모드 띠 -->
+        <div class="selbar hidden" id="q-selbar" role="group" aria-label="골라서 내려받기">
+          <span id="q-selbar-text">0개 선택됨</span>
+          <span class="muted xs">행 앞 칸을 눌러 고르세요</span>
+          <a class="btn primary sm" id="q-export-selected" href="/api/questions/export" download><svg class="icon i14" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg>내려받기</a>
+          <button class="btn sm" type="button" id="q-select-cancel"><svg class="icon i14" aria-hidden="true" focusable="false"><use href="#i-x"/></svg>취소</button>
+        </div>
       </div>
+      <details class="kinds-fold" id="q-kinds-fold">
+        <summary><svg class="icon i14 chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"/></svg>종류별로 보기<span class="muted xs" id="q-kinds-sum"></span></summary>
+        <div class="card pad">
+          <div class="muted xs" style="margin-bottom:6px">막대 길이 = 질문 수, 채움 = 답변 완료. 누르면 그 종류만 봐요.</div>
+          <div class="kinds" id="q-kinds"></div>
+        </div>
+      </details>
       <div class="qlist" id="q-list"></div>
       <div class="print-sheet print-only" id="q-print"></div>
     </section>
 
     <section class="view" id="view-trace">
       <h2>경로 추적 <span class="muted small">콜 트리</span></h2>
-      <p class="lead">URL 하나가 어떤 코드와 SQL, 테이블을 거치는지 따라갑니다. 파일 위치를 누르면 코드를 볼 수 있습니다.</p>
+      <p class="lead">URL 하나가 어떤 코드와 SQL, 테이블을 거치는지 따라갑니다. 파일 위치를 누르면 코드를 볼 수 있습니다. 전체 구조는 <a href="#overview">프로젝트 지도</a>에서 봅니다.</p>
       <div class="card pad">
-        <div class="row">
-          <div class="search-wrap grow">
-            <input type="search" id="trace-q" style="width:100%" autocomplete="off"
-              placeholder="URL 전체 또는 일부 (예: selectArticleList). 브라우저 주소를 그대로 붙여 넣어도 됩니다"
-              role="combobox" aria-label="추적할 URL" aria-autocomplete="list" aria-expanded="false" aria-controls="trace-suggest">
-            <ul class="suggest card hidden" id="trace-suggest" role="listbox" aria-label="URL 추천"></ul>
-          </div>
-          <label class="check"><input type="checkbox" id="trace-full">공통 유틸 안쪽도 보기</label>
+        <div class="search-wrap">
+          <input type="search" id="trace-q" style="width:100%" autocomplete="off"
+            placeholder="URL 전체 또는 일부 (예: selectArticleList). 브라우저 주소를 그대로 붙여 넣어도 됩니다"
+            role="combobox" aria-label="추적할 URL" aria-autocomplete="list" aria-expanded="false" aria-controls="trace-suggest">
+          <ul class="suggest card hidden" id="trace-suggest" role="listbox" aria-label="URL 추천"></ul>
         </div>
         <div class="recent hidden" id="trace-recent"></div>
+        <details class="fold-sm" id="trace-opts">
+          <summary><svg class="icon i14 chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"/></svg>보기 옵션</summary>
+          <div class="fold-body">
+            <label class="check"><input type="checkbox" id="trace-full">공통 유틸 안쪽도 보기</label>
+            <div class="trace-legend">
+              <span><span class="dashed-tag">추정 연결</span> 동적 SQL ID를 문자열 앞부분으로 짐작해 이은 SQL이에요. 실제로 부르는 SQL과 다를 수 있어요.</span>
+              <span><span class="dashed-tag">저장소 밖 · 빈</span> 이 저장소에 소스가 없는 빈(라이브러리 jar·설정 XML에만 정의)이에요. 안쪽은 따라가지 못해요.</span>
+              <span><span class="chip bad risk"><svg class="icon i12" aria-hidden="true" focusable="false"><use href="#i-triangle-alert"/></svg>없는 SQL 호출</span> 이 메서드가 부르는 SQL ID가 Mapper에 없어요. 이 경로를 실행하면 오류가 나요.</span>
+            </div>
+          </div>
+        </details>
       </div>
       <div id="trace-result" style="margin-top:16px"></div>
     </section>
@@ -168,43 +187,58 @@
       <form class="card ask-box" id="ask-form">
         <label class="visually-hidden" for="ask-q">질문</label>
         <textarea id="ask-q" placeholder="예: 휴가 신청할 때 연차가 없으면 어떻게 돼? (Ctrl+Enter로 묻기)" required></textarea>
-        <div class="examples" id="ask-examples"></div>
-        <div class="target">
-          <label for="ask-target">대상 코드 (선택)</label>
-          <input type="text" id="ask-target" placeholder="예: EgovBBSController.selectArticleList 또는 /cop/bbs/…do">
+        <div class="row ask-go-row">
+          <div class="examples grow" id="ask-examples"></div>
+          <button class="btn primary lg" type="submit" id="ask-go"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message-square-quote"/></svg>묻기</button>
         </div>
-        <div class="row">
-          <label class="check grow"><input type="checkbox" id="ask-git" checked>커밋 기록도 근거로 쓰기</label>
-          <div class="recent hidden" id="ask-recent" style="margin:0"></div>
-          <button class="btn primary lg" type="submit" id="ask-go"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message-square-quote"/></svg>사수에게 묻기</button>
-        </div>
+        <!-- 대상 코드·커밋 기록·최근 기록은 접어 둔다 (대상이 채워지면 저절로 펼친다) -->
+        <details class="fold-sm" id="ask-adv">
+          <summary><svg class="icon i14 chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"/></svg>고급<span class="muted xs" id="ask-adv-sum"></span></summary>
+          <div class="fold-body">
+            <div class="target">
+              <label for="ask-target">대상 코드 (선택)</label>
+              <input type="text" id="ask-target" placeholder="예: EgovBBSController.selectArticleList 또는 /cop/bbs/…do">
+            </div>
+            <label class="check"><input type="checkbox" id="ask-git" checked>커밋 기록도 근거로 쓰기</label>
+            <div class="recent hidden" id="ask-recent" style="margin:0"></div>
+          </div>
+        </details>
       </form>
       <div id="ask-result"></div>
     </section>
 
     <section class="view" id="view-cleanup">
       <h2>고도화 준비</h2>
-      <p class="lead">고도화 전에 볼 것: 없는 SQL 호출, 부르는 곳을 못 찾은 코드, 여러 곳에 복사된 코드, 같은 SQL.</p>
-      <div class="asis">
-        <a class="btn" href="/api/behaviors/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-spreadsheet"/></svg>기존 동작 목록(AS-IS) 내려받기</a>
-        <span class="muted small">URL마다 화면·읽고 쓰는 테이블·분기 값 — 고도화 뒤 같은 목록으로 확인</span>
-      </div>
+      <p class="lead">바꾸기 전 동작을 엑셀로 남겨 두고, 고도화 뒤 같은 목록으로 확인합니다. URL마다 화면·읽고 쓰는 테이블·분기 값이 들어 있습니다.</p>
       <div class="card pad asis-mod">
+        <!-- 기능 찾기: 업무명(휴가관리)·모듈(uss.ion)로 골라 받는다. 비우면 전체 -->
         <div class="row">
-          <label for="asis-module" class="small"><b>모듈(기능)별로 받기</b></label>
-          <select id="asis-module"><option value="">모듈을 불러오는 중…</option></select>
-          <a class="btn" id="asis-module-go" href="/api/behaviors/export" download aria-disabled="true"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-spreadsheet"/></svg>이 모듈 기존 동작 목록(AS-IS) 내려받기</a>
+          <label for="asis-q" class="small"><b>기능 찾기</b></label>
+          <div class="search-wrap asis-find">
+            <input type="search" id="asis-q" autocomplete="off" style="width:100%"
+              placeholder="업무명이나 모듈 (예: 휴가, uss.ion). 비우면 전체"
+              role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="asis-suggest" aria-describedby="asis-pick">
+            <ul class="suggest card hidden" id="asis-suggest" role="listbox" aria-label="기능 후보"></ul>
+          </div>
+          <a class="btn primary" id="asis-go" href="/api/behaviors/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-spreadsheet"/></svg><span id="asis-go-text">기존 동작 목록 받기</span></a>
         </div>
+        <div class="muted xs asis-pick" id="asis-pick" aria-live="polite"></div>
         <ol class="asis-steps" aria-label="고도화 후 확인 열 채우는 법">
-          <li><b>고도화 전</b> — 목록을 내려받아 보관합니다. 지금 동작이 기준이 됩니다.</li>
-          <li><b>고도화 뒤</b> — 같은 URL을 실행해 화면·읽고 쓰는 테이블·업무 코드 분기가 목록과 같은지 한 줄씩 봅니다.</li>
-          <li><b>'고도화 후 확인' 열</b>에 같음 / 달라짐(의도) / 달라짐(확인 필요) / 없어짐 중 하나를 고르고, 달라졌으면 '비고'에 이유를 적습니다. 엑셀의 '사용법' 시트에도 같은 설명이 있습니다.</li>
+          <li><b>고도화 전</b> 목록을 받아 보관합니다.</li>
+          <li><b>고도화 뒤</b> 같은 URL을 실행해 목록과 같은지 봅니다.</li>
+          <li><b>'고도화 후 확인' 열</b>에 같음 / 달라짐(의도) / 달라짐(확인 필요) / 없어짐을 고릅니다. 엑셀 '사용법' 시트에 자세히 있습니다.</li>
         </ol>
       </div>
-      <div class="tiles" id="cleanup-tiles"></div>
-      <div id="cleanup-unused"></div>
-      <h3>공통 코드·복사 코드</h3>
-      <div id="cleanup-common"></div>
+      <!-- 정리할 코드 후보(없는 SQL 호출·미사용·공통 코드·복사 코드)는 접어 둔다 -->
+      <details class="card cleanup-more" id="cleanup-more">
+        <summary><svg class="icon i14 chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"/></svg><b>정리할 코드 후보 보기</b><span class="cleanup-sum" id="cleanup-sum">불러오는 중…</span></summary>
+        <div class="fold-body">
+          <div class="tiles" id="cleanup-tiles"></div>
+          <div id="cleanup-unused"></div>
+          <h3>공통 코드·복사 코드</h3>
+          <div id="cleanup-common"></div>
+        </div>
+      </details>
     </section>
   </main>
 

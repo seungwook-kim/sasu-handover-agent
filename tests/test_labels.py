@@ -356,6 +356,28 @@ def test_behaviors_export_usage_sheet_and_korean_column(client):  # A8
     assert "uss.ion" not in client.get("/api/behaviors/export").headers["content-disposition"]
 
 
+def test_behaviors_export_by_business(client):
+    """모듈 업무명이 "휴가관리 외 1"이어도 휴가관리 URL만 골라 받는다."""
+    from urllib.parse import unquote
+
+    ov = client.get("/api/overview").json()
+    assert {"label": "휴가관리", "module": "uss.ion", "urls": 2} in ov["businesses"]
+    assert {"label": "당직관리", "module": "uss.ion", "urls": 1} in ov["businesses"]
+
+    def urls(**params):
+        res = client.get("/api/behaviors/export", params=params)
+        assert res.status_code == 200
+        ws = load_workbook(io.BytesIO(res.content)).worksheets[0]
+        return res, [ws.cell(row=r, column=3).value for r in range(2, ws.max_row + 1)]
+
+    res, got = urls(business="휴가관리")
+    assert sorted(got) == ["/uss/ion/vct/insertVacation.do", "/uss/ion/vct/listVacation.do"]
+    assert "휴가관리" in unquote(res.headers["content-disposition"])
+    assert urls(business="당직관리", module="uss.ion")[1] == ["/uss/ion/bnt/listDuty.do"]
+    assert urls(business="휴가관리", module="uat")[1] == []  # 둘 다 맞아야 한다
+    assert urls(business="없는업무")[1] == []
+
+
 def test_trace_broken_estimated_and_korean_label(client):  # A9
     data = client.get("/api/trace", params={"url": "/uss/ion/vct/insertVacation.do"}).json()
     nodes = []

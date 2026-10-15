@@ -119,6 +119,8 @@ def create_app() -> FastAPI:
                 "build": ov.build,
                 "counts": {k: v for k, v in ov.counts.items() if v or k in ("URL", "SQL")},
                 "modules": modules,
+                # 업무명마다 URL 수 (고도화 준비에서 "휴가관리"처럼 업무로 골라 받을 때)
+                "businesses": names.businesses(),
                 "tables": [asdict(t) for t in ov.tables],
                 "coverage": asdict(cov),
                 # 없는 SQL 호출: URL에서 이어지면 실행 오류 위험, 아니면 죽은 코드
@@ -140,16 +142,18 @@ def create_app() -> FastAPI:
         return {"module": name, "urls": urls}
 
     @app.get("/api/behaviors/export")
-    def behaviors_export(module: str | None = None):
-        """기존 동작 목록 엑셀 (고도화 전후 확인용 체크리스트)."""
+    def behaviors_export(module: str | None = None, business: str | None = None):
+        """기존 동작 목록 엑셀 (고도화 전후 확인용 체크리스트).
+        business=휴가관리: 처리 메서드 클래스의 업무명이 그 값인 URL만 (module과 함께 쓰면 둘 다 맞는 것)."""
         from sasu.analysis.behaviors import export_behaviors, list_behaviors
 
         name = current_project() or "project"
-        if module:  # 파일 이름에 모듈을 넣는다. 파일 이름에 못 쓰는 글자는 뺀다
-            name = f"{name}-{''.join(ch for ch in module if ch.isalnum() or ch in '._-')}"
+        for part in (module, business):  # 파일 이름에 모듈·업무명을 넣는다. 파일 이름에 못 쓰는 글자는 뺀다
+            if part and (safe := "".join(ch for ch in part.strip() if ch.isalnum() or ch in "._-")):
+                name = f"{name}-{safe}"
         out = Path(tempfile.gettempdir()) / f"sasu-{name}-기존동작목록.xlsx"
         with _connect() as conn:
-            export_behaviors(list_behaviors(conn, module), out)
+            export_behaviors(list_behaviors(conn, module, business), out)
         return FileResponse(out, filename=f"{name}-기존동작목록.xlsx",
                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

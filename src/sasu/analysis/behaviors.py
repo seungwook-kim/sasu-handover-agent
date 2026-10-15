@@ -38,7 +38,9 @@ class Behavior:
     label: str | None = None  # 한글 기능 이름 "휴가관리 · 휴가를 등록한다" (주석에 없으면 None)
 
 
-def list_behaviors(conn: sqlite3.Connection, module: str | None = None) -> list[Behavior]:
+def list_behaviors(conn: sqlite3.Connection, module: str | None = None,
+                   business: str | None = None) -> list[Behavior]:
+    """module: 그 모듈(과 하위 모듈)의 URL만. business: 처리 메서드 클래스의 업무명이 그 값인 URL만."""
     modules = class_modules(conn)
     names = Labels(conn)
     lang = {r["id"]: r["kind"] for r in conn.execute(
@@ -56,6 +58,8 @@ def list_behaviors(conn: sqlite3.Connection, module: str | None = None) -> list[
     ).fetchall():
         mod = modules.get(r["class_id"], "")
         if module and mod != module and not mod.startswith(module + "."):
+            continue
+        if business and names.class_label(r["class_id"]) != business.strip():
             continue
         b = Behavior(module=mod, url=r["url"], handler=f"{r['class_name']}.{r['method_name']}",
                      location=f"{r['path']}:{r['line_start']}", label=names.full(r["method_id"]))
@@ -156,7 +160,7 @@ def export_behaviors(behaviors: list[Behavior], path: Path, title: str = "기존
     check = get_column_letter(_col("고도화 후 확인"))
     rule = DataValidation(type="list", formula1=_CHECK_OPTIONS, allow_blank=True)
     ws.add_data_validation(rule)
-    rule.add(f"{check}2:{check}{len(behaviors) + 1}")
+    rule.add(f"{check}2:{check}{max(len(behaviors), 1) + 1}")  # 0행이어도 범위가 거꾸로 되지 않게
     ws.freeze_panes = "E2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{len(behaviors) + 1}"
     _usage_sheet(wb.create_sheet("사용법"))

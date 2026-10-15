@@ -1,7 +1,7 @@
 # 사수 (SASU) 소프트웨어 설계 (SDD)
 
-- 기준일: 2026-10-11
-- 기준 코드: `main` 9780da6 · 패키지 0.1.0 · 분석 파일 스키마 버전 7
+- 기준일: 2026-10-15
+- 기준 코드: `main` 49dfe71 + 단계별 화면 정리 · 패키지 0.1.0 · 분석 파일 스키마 버전 7
 - 함께 보는 문서: [제품 요구사항 (PRD)](prd.md) · [데이터 모델 (ERD)](erd.md) · [RAG 구조와 평가](rag.md) · [설치 안내](install.md)
 
 ## 1. 설계 원칙
@@ -29,9 +29,9 @@ flowchart LR
     end
     DB[("projects/프로젝트.db<br/>코드 그래프 · 질문·답 · 벡터")]
     subgraph 기능
-        A["analysis/<br/>overview · unused · common · questions · behaviors"]
+        A["analysis/<br/>overview · unused · common · questions · behaviors · labels"]
         T["trace.py"]
-        R["rag/<br/>search · vectors · evidence · answer · pipeline"]
+        R["rag/<br/>search · expand · vectors · evidence · answer · pipeline"]
         H["handover.py · handover_sheet.py"]
     end
     subgraph 인터페이스
@@ -49,6 +49,7 @@ flowchart LR
     GIT --> R
     EMB --> R
     R --> LLM
+    A -->|한글 이름표| R
     A & T & R & H --> CLI & API & MCP
     MCP --> PLG
 ```
@@ -74,19 +75,21 @@ flowchart LR
 | `analysis/unused.py` | 끊어진 쿼리, 부르는 곳이 없는 SQL·URL·메서드·JSP |
 | `analysis/common.py` | 공통 코드 사용, 복사 코드(본문 해시), 중복 SQL |
 | `analysis/questions.py` | 인수인계 질문 생성과 저장 |
-| `analysis/behaviors.py` | 기존 동작 목록과 엑셀 내보내기 |
-| `handover.py` | 질문 새로 만들기, 답 저장, 질문 초안 (CLI·웹·MCP 공용) |
-| `handover_sheet.py` | 엑셀 질문지 내보내기·가져오기 (openpyxl) |
+| `analysis/behaviors.py` | 기존 동작 목록과 엑셀 내보내기 (모듈·업무명으로 좁히기, "사용법" 시트, "기능(한글)" 열) |
+| `analysis/labels.py` | 한글 이름표: 클래스 업무명(Javadoc·파일 머리말 `Description`, 20자), 메서드 한글 설명(Javadoc 첫 한글 줄, 40자), 모듈 업무명(모듈 안 Controller 업무명 중 가장 흔한 것), 업무명별 URL 수, 한글로 URL 찾기. 주석에 없으면 None (지어내지 않음) |
+| `handover.py` | 질문 새로 만들기, 답 저장, 건너뛰기, 질문 초안 (CLI·웹·MCP 공용) |
+| `handover_sheet.py` | 엑셀 질문지 내보내기(전체 또는 고른 id, '번호' = Q{id})·가져오기(바뀜·같음·못 찾음을 따로 셈) (openpyxl) |
 | `githistory.py` | `git blame`으로 줄을 바꾼 커밋, 포맷 정리·릴리스 커밋 제외 목록 |
-| `rag/search.py` | BM25(한국어 2-gram) + 용어 사전 + 벡터 + 그래프 전파 + 답변 끌어올리기 |
+| `rag/search.py` | BM25(한국어 2-gram) + 용어 사전 + 넓힌 말(가중치 0.7) + 벡터 + 그래프 전파 + 답변 끌어올리기 |
+| `rag/expand.py` | LLM 질문 넓히기: 일상어 질문 → 코드에 나올 말(영어 식별자 조각·프로젝트 약어·한국어 동의어) JSON 배열, 4~12개. 프롬프트에 코드에서 뽑은 힌트(업무명=클래스 조각 120개, 자주 나오는 조각 50개). 질문 해시로 캐시, 실패하면 빈 목록 |
 | `rag/embeddings.py` · `rag/vectors.py` | 임베딩(로컬·API), 임베딩 캐시, sqlite-vec 색인과 검색 |
 | `rag/evidence.py` | 대상 메서드 정하기, 근거 모으기와 등급 |
 | `rag/answer.py` | LLM 호출(OpenAI 호환·claude CLI), 답변 형식 검사 |
-| `rag/pipeline.py` | 대상 선택 → 근거 수집 (CLI·웹·MCP 공용) |
+| `rag/pipeline.py` | 대상 선택 → 근거 수집 (CLI·웹·MCP 공용). 검색으로 고르면 후보 6개(상위 30개에서 같은 클래스는 2개까지)와 고른 이유(why), `auto`, `low_confidence`, 넓힌 말 |
 | `web/server.py` · `web/static/` | FastAPI API와 CDN 없는 화면 (HTML·JS·CSS) |
 | `mcp_server.py` | MCP 서버 (도구 10개) |
 | `setup_env.py` | `sasu setup`의 설정 파일 쓰기, `sasu doctor`의 점검 항목 |
-| `evaluation/` | 과거 시점 재현(`git archive`), 질문·검색·"왜?" 채점 |
+| `evaluation/` | 과거 시점 재현(`git archive`), 질문·검색·"왜?" 채점. `everyday.json` + `everyday_eval.py`: 일상어 질문 19개(정답 있는 16 + 일반 개념 3)로 묻기 대상 후보 채점 |
 
 ## 4. 실행 환경과 설정
 
@@ -116,6 +119,8 @@ flowchart LR
 | `SASU_EMBED_PROVIDER` | `none` | `none`, `local`(fastembed), `api`(OpenAI 호환 `/embeddings`) |
 | `SASU_EMBED_MODEL` | local: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 임베딩 모델 (api는 필수) |
 | `SASU_EMBED_BASE_URL` · `SASU_EMBED_API_KEY` | LLM 값 | 임베딩 서버가 따로 있을 때 |
+| `SASU_QUERY_EXPAND` | `auto` | 묻기 검색 전 LLM 질문 넓히기. `auto`(LLM이 설정돼 있으면 켬) · `on` · `off`. 대상을 직접 적은 질문(Class.method·URL·파일:줄)에는 쓰지 않는다 |
+| `SASU_EXPAND_MODEL` | claude-code: `haiku` / OpenAI 호환: `SASU_LLM_MODEL` | 질문 넓히기에 쓸 모델 (빠른 모델 권장) |
 
 ## 5. 분석 파이프라인 (`sasu index`)
 
@@ -247,11 +252,14 @@ sequenceDiagram
     participant L as LLM
     participant V as rag/answer.validate
     U->>P: 질문 (+ 대상)
-    alt 대상 지정 (Class.method · /URL · 파일:줄 · 메서드 이름)
+    alt 대상 지정 (Class.method · /URL · 파일:줄 · 메서드 이름 · 고른 후보)
         P->>P: resolve_target (메서드 이름만이면 Service 우선)
     else 자유 질문
-        P->>S: search (BM25 + 벡터 + 그래프 + 답변)
-        S-->>P: 후보 5개, 1위를 대상으로
+        P->>L: 질문 넓히기 (rag/expand, 빠른 모델, 캐시)
+        L-->>P: 코드 말 4~12개 (실패하면 없음)
+        P->>S: search (BM25 + 넓힌 말 + 벡터 + 그래프 + 답변)
+        S-->>P: 후보 6개 + why + low_confidence, 1위를 대상으로 (auto)
+        P-->>U: 웹: 답 전에 확인 카드 (이 코드로 묻기 / 다른 후보)
     end
     P->>E: gather(대상)
     E-->>P: 근거 E1…En (등급 포함)
@@ -266,6 +274,8 @@ sequenceDiagram
 - **토큰:** 한국어는 조사·어미를 뗀 뒤 글자 2-gram, 영어는 카멜 표기를 쪼갠다. 질문하는 말투(어떻게·테이블·읽어 등)는 불용어로 뺀다.
 - **용어 사전:** VO 필드 주석(`/** 게시물 아이디 */ nttId`)의 한국어 2-gram이 질문과 두 개 이상 겹치면 필드 이름 토큰을 0.5 가중치로 더한다.
 - **점수:** BM25(k1 1.2, b 0.75) → (벡터 색인이 있으면) BM25를 최고점 1로 맞추고 코사인 유사도 × 0.3을 더하는 선형 결합 → 인수인계 답변과 질문 단어(idf 가중)가 34% 이상 겹치면 1위 점수의 최대 50%를 더함 → 직접 부르는 메서드 중 최고 점수의 25%를 부르는 쪽에 더함.
+- **질문 넓히기** (`rag/expand.py`): 검색 전에 LLM이 질문을 코드 말로 넓힌다. 넓힌 말은 BM25 질의에 가중치 0.7로 더하고(질문 낱말은 1), 벡터 검색은 원래 질문으로 한다. 결과는 `cache/query-expand/`에 질문 해시로 둔다. LLM이 없거나 실패하면 원래 검색 그대로. 일상어 질문 16개에서 상위 6 정답률 25% → 69~81%, 질문당 약 +5초 ([일상어 평가](rag.md#일상어-질문-평가-2026-10-15)).
+- **후보와 확신** (`rag/pipeline.py`): 상위 30개에서 같은 클래스는 2개까지 6개를 후보로 둔다. 후보마다 고른 이유 `why`("맞은 말: 로그인, Login, incorrect · 업무명 일반 로그인"). `low_confidence`는 넓힌 말 없이 질문 낱말만으로 가장 잘 맞는 코드의 BM25 점수가 12 미만이거나, 1위 후보에 질문 낱말이 하나도 없으면 true.
 - RRF는 비교용으로만 남겼다. 약한 벡터 순위가 BM25 1위를 희석해 R@1이 28%에서 11%로 떨어졌다 ([실험 기록](rag.md#실험-기록)).
 
 ### 8.2 근거 (`rag/evidence.py`)
@@ -320,7 +330,7 @@ LLM 클라이언트:
 | 인수인계 | `questions [--export]` · `answers <엑셀>` · `answer <Q번호> "<답>" --by <이름>` · `draft <Q번호>` |
 | 질의응답 | `ask "<질문>"` |
 | 서버 | `serve` (웹) · `mcp` (MCP stdio) |
-| 평가 | `eval-questions` · `eval-search` · `eval-why` |
+| 평가 | `eval-questions` · `eval-search` · `eval-why` · `eval-everyday [--set] [--db] [--no-llm] [--no-cache] [--out]` |
 
 ### 9.2 웹 API (`sasu serve`)
 
@@ -330,22 +340,42 @@ LLM 클라이언트:
 | --- | --- | --- |
 | GET | `/api/projects` | 분석한 프로젝트 목록 |
 | POST | `/api/projects/current` | 지금 프로젝트 바꾸기 |
-| GET | `/api/overview` | 한눈에 보기 (지도·연결률) |
-| GET | `/api/modules/{name}` | 모듈의 URL과 읽고 쓰는 테이블 |
-| GET | `/api/behaviors/export` | 기존 동작 목록 엑셀 |
-| GET | `/api/urls?q=` | URL 자동 완성 |
-| GET | `/api/trace?url=&full=` | 경로 추적 트리 |
+| GET | `/api/overview` | 프로젝트 지도·시작 화면 숫자 (아래 필드) |
+| GET | `/api/modules/{name}` | 모듈의 URL과 읽고 쓰는 테이블, URL마다 `label`(처리 메서드 한글 설명) |
+| GET | `/api/behaviors/export?module=&business=` | 기존 동작 목록 엑셀. `module`(uss.ion)·`business`(휴가관리: 처리 메서드 클래스의 업무명이 그 값인 URL만)로 좁히고, 둘 다 주면 둘 다 맞는 것. 파일 이름에 모듈·업무명 |
+| GET | `/api/urls?q=` | URL 자동 완성. 한글이면 처리 메서드·클래스 한글 설명으로도 찾고, `labels: {url: 한글 설명}` |
+| GET | `/api/trace?url=&full=` | 경로 추적 트리. 메서드 노드에 `label`·`broken`(Mapper에 없는 쿼리 ID), SQL 노드에 `estimated`(동적 ID 추정 연결) |
 | GET | `/api/code?path=&start=&end=` | 코드 보기 |
-| GET | `/api/questions` | 인수인계 질문과 진행률 |
+| GET | `/api/questions` | 인수인계 질문과 진행률. `answered`·`skipped` 개수, 질문마다 `label`·`module`·`module_label` |
 | POST | `/api/questions/refresh` | 질문 다시 만들기 |
-| POST | `/api/questions/{id}/answer` | 답 저장 |
+| POST | `/api/questions/{id}/answer` | 답 저장 (빈 답이면 미답변으로 되돌림) |
+| POST | `/api/questions/{id}/skip` | 건너뛰기. 본문 `{"reason": "", "by": null}`, 이유는 답변 칸에. 응답은 answer와 같은 모양 |
 | GET | `/api/questions/{id}/draft` | 떠난 개발자에게 보낼 메시지 |
-| GET | `/api/questions/export` | 엑셀 질문지 내려받기 |
-| POST | `/api/questions/import` | 답을 적은 엑셀 올리기 |
-| POST | `/api/ask/evidence` | 대상 선택 + 근거 |
+| GET | `/api/questions/export?ids=` | 엑셀 질문지 내려받기. `ids=1,2,3`(Q 붙여도 됨)이면 그 질문만 |
+| POST | `/api/questions/import` | 답을 적은 엑셀 올리기. 응답 `saved`(실제로 바뀐 행)·`unchanged`·`missing` |
+| POST | `/api/ask/evidence` | 대상 선택 + 근거 (LLM 답 없음, 아래 필드) |
 | POST | `/api/ask/answer` | 근거 + LLM 답 + 검사 결과 |
 | GET | `/api/unused` | 정리 후보 |
 | GET | `/api/common?top=` | 공통 코드·복사 코드·중복 SQL |
+
+`/api/overview`에 사용성 시험 뒤 더한 필드:
+
+| 필드 | 뜻 |
+| --- | --- |
+| `modules[].label` · `modules[].labels` | 모듈의 대표 업무명("당직관리 외 27")과 업무명 목록 |
+| `businesses` | 업무명마다 모듈과 URL 수 `[{"label": "휴가관리", "module": "uss.ion", "urls": 11}, …]` — 고도화 준비의 "기능 찾기" |
+| `broken_sql` | 없는 SQL 호출 `{"reachable": 2, "unreachable": 9}` — URL에서 이어져 실행하면 오류가 나는 곳 / 이어지지 않는 곳 |
+
+`/api/ask/evidence`·`/api/ask/answer` 요청 본문은 `question`, `target`(Class.method · URL · 파일:줄), `method_id`(후보 중 고른 것), `use_git`. evidence 응답:
+
+| 필드 | 뜻 |
+| --- | --- |
+| `auto` | 사람이 정하지 않고 검색 1위로 골랐으면 true. 화면은 이때 답 전에 확인 카드를 띄운다 |
+| `candidates[]` | 후보 6개(같은 클래스는 2개까지). 각 `label`(Class.method)·`label_ko`(한글 설명)·`why`(고른 이유)·`score`·`path`·`line` |
+| `low_confidence` | 1위가 질문과 약하게만 맞으면 true. 화면은 경고하고 직접 고르게 한다 |
+| `expanded_terms` | LLM이 넓힌 말 (넓히지 않았으면 `[]`) |
+| `target` | 고른 대상과 `label_ko` |
+| `evidence[]` | 근거 E1…En과 등급 |
 
 ### 9.3 MCP 도구 (`sasu mcp`)
 
@@ -385,6 +415,7 @@ LLM 클라이언트:
 | LLM이 설정되지 않음 | 근거만 보여 준다 |
 | LLM 오류 (HTTP·연결·형식·시간 초과) | `LLMError`로 원인을 300자까지 보여 준다 |
 | 임베딩 설정 오류 | 조용히 BM25만 쓴다 |
+| 질문 넓히기 LLM 오류·시간 초과 | 조용히 넓히지 않고 원래 질문으로 검색한다 |
 | sqlite-vec를 불러올 수 없음 | 벡터 색인을 만들 때 오류로 알린다 (`uv sync` 안내). 검색은 BM25로 한다 |
 | MCP에서 프로젝트가 없음 | `ToolError`로 `sasu index`를 안내한다 |
 | Git Bash가 `/url` 인자를 Windows 경로로 바꿈 | CLI가 원래 URL로 되돌린다 |
@@ -405,13 +436,14 @@ LLM 클라이언트:
 
 ## 12. 테스트와 평가
 
-- `tests/` pytest 106개: 파서(Java·MyBatis·Python), 그래프·연결(Java 데이터 접근 포함), 지도·정리·공통·질문·동작 목록, RAG·벡터·LLM 서버, 웹, MCP, 플러그인, 설치 점검, 시나리오(질문 → 답 → "왜?").
+- `tests/` pytest 142개: 파서(Java·MyBatis·Python), 그래프·연결(Java 데이터 접근 포함), 지도·정리·공통·질문·동작 목록, RAG·벡터·LLM 서버, 웹, MCP, 플러그인, 설치 점검, 시나리오(질문 → 답 → "왜?").
 - 평가는 실제 회사 코드 대신 **공개 프로젝트의 과거 기록**을 정답지로 쓴다. `evaluation/history.py`가 `git archive`로 과거 시점을 재현한다.
 
 | 평가 | 방법 | 기록 |
 | --- | --- | --- |
 | 질문 생성 | 과거 시점의 질문 상위 N개가 이후 버그 수정 메서드를 가리켰나 (무작위·복잡도 순과 비교) | [4단계 평가](gate4-evaluation.md) |
 | 검색 | 버그 수정 커밋 제목으로 고칠 메서드 찾기, 기법을 하나씩 켜며 비교 | [RAG 평가](rag.md) |
+| 일상어 검색 | 사용성 시험에서 나온 일상어 질문으로 묻기 대상 후보(상위 6) 채점, 넓히기 전후 비교 | [RAG 평가](rag.md#일상어-질문-평가-2026-10-15) |
 | "왜?" 답변 | 커밋 메시지를 숨기고 묻기, 사수 vs LLM만, 채점 LLM | [RAG 평가](rag.md) |
 
 ## 13. 주요 설계 결정
@@ -423,6 +455,8 @@ LLM 클라이언트:
 | 질문 생성은 LLM 없이 규칙으로 | 재현 가능하고, LLM이 없는 현장에서도 된다 |
 | 검색은 BM25 중심 + 벡터 선형 결합 | 작은 로컬 임베딩은 혼자서 약하고, RRF는 BM25 1위를 희석했다 |
 | 답변 등급을 코드가 검사 | LLM이 [답변]이라고 해도 인수인계 답변 근거가 없으면 믿지 않는다 |
+| 검색이 고른 대상은 답 전에 사람이 확인 | 사용성 시험에서 엉뚱한 대상에 대한 [사실]이 질문의 답처럼 읽혀 틀린 확신을 만들었다 |
+| LLM 질문 넓히기는 BM25에 낮은 가중치로만 | 넓힌 말이 실행마다 달라도 질문 낱말이 중심이 되게. LLM이 없어도 검색은 그대로 된다 |
 | LLM은 OpenAI 호환 주소 하나 | 사내 LLM 서버로 주소만 바꿔 옮긴다 |
 | 질문은 id가 아니라 key로 식별 | 색인할 때마다 코드 id가 바뀌어도 사람의 답이 같은 코드에 다시 붙는다 |
 | MCP에서는 에이전트 LLM이 답을 씀 | 사수 쪽 LLM 설정 없이 Claude Code·Cursor에서 바로 쓴다 |

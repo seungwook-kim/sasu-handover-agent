@@ -240,6 +240,20 @@ class Labels:
         return {r["url"]: r["mid"] for r in self.conn.execute(
             "SELECT url, MIN(method_id) AS mid FROM url_mappings GROUP BY url")}
 
+    def businesses(self) -> list[dict]:
+        """업무명(URL 처리 메서드 클래스의 업무명)과 모듈마다 URL 수. 이름순.
+        모듈 업무명은 "당직관리 외 27"처럼 대표 하나만 보여서, 휴가관리처럼 묶음 안 업무로 고를 때 쓴다."""
+        counts: Counter = Counter()
+        for r in self.conn.execute(
+            "SELECT m.class_id FROM (SELECT url, MIN(method_id) AS mid FROM url_mappings GROUP BY url) h "
+            "JOIN methods m ON m.id = h.mid"
+        ):
+            label = self.class_label(r["class_id"])
+            if label:
+                counts[(label, self.module_of_class(r["class_id"]) or "")] += 1
+        return [{"label": label, "module": module, "urls": n}
+                for (label, module), n in sorted(counts.items())]
+
     def url_label(self, url: str, handlers: dict[str, int] | None = None) -> str | None:
         mid = (handlers or self.url_handlers()).get(url)
         return self.method_label(mid)

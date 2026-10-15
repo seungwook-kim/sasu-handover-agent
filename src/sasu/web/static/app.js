@@ -248,12 +248,6 @@ function gradeChip(label, extra) {
   return h("span", { class: `grade ${g.cls}${extra ? " " + extra : ""}`, title: g.desc }, icon(g.icon), g.name);
 }
 
-function gradeLegendLine() {
-  return h("div", { class: "card legend-line" },
-    ["사실", "답변", "추정", "모름", "질문"].map((k) => gradeChip(k)),
-    h("span", { class: "muted" }, "사수는 코드·SQL·받은 답변만 근거로 답하고, 근거가 없으면 '모름'이라고 말합니다."));
-}
-
 // ── 코드 서랍 (7.6) ──────────────────────────────────────
 
 let drawer = null;  // { el, scrim, prev }
@@ -361,19 +355,61 @@ function modal(title, content, actions) {
   return close;
 }
 
+// ── 펼침 메뉴 (.menu-wrap = .menu-btn + .menu) ───────────
+// 한 번에 하나만 열린다. 항목을 누르거나 바깥을 누르거나 Esc면 닫힌다
+let openMenu = null;
+function setMenu(wrap, open) {
+  const btn = wrap.querySelector(".menu-btn");
+  const menu = wrap.querySelector(".menu");
+  if (open && openMenu && openMenu !== wrap) setMenu(openMenu, false);
+  menu.classList.toggle("hidden", !open);
+  btn.setAttribute("aria-expanded", String(open));
+  if (open) {
+    openMenu = wrap;
+    // 화면 왼쪽·아래로 잘리지 않게 붙는 쪽을 바꾼다
+    menu.classList.remove("to-left", "up");
+    const r = menu.getBoundingClientRect();
+    if (r.left < 8) menu.classList.add("to-left");
+    if (r.bottom > window.innerHeight - 8 && btn.getBoundingClientRect().top > r.height + 16) menu.classList.add("up");
+    const first = menuItems(menu)[0];
+    if (first) first.focus();
+  } else if (openMenu === wrap) openMenu = null;
+}
+const menuItems = (menu) => [...menu.querySelectorAll("button:not([disabled]), a[href]")].filter((el) => el.offsetParent !== null);
+function wireMenu(wrap) {
+  const btn = wrap.querySelector(".menu-btn");
+  const menu = wrap.querySelector(".menu");
+  btn.addEventListener("click", (e) => { e.stopPropagation(); setMenu(wrap, menu.classList.contains("hidden")); });
+  // 항목을 누르면 포커스를 메뉴 버튼으로 먼저 돌려 둔다 (항목이 연 창이 닫힐 때 숨은 항목이 아니라 이 버튼으로 돌아오게)
+  menu.addEventListener("click", (e) => { if (e.target.closest("button, a")) btn.focus({ preventScroll: true }); }, true);
+  menu.addEventListener("click", (e) => { if (e.target.closest("button, a")) setMenu(wrap, false); });
+  // ↑↓로 항목 사이를 움직인다
+  menu.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const items = menuItems(menu);
+    const i = items.indexOf(document.activeElement);
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  });
+  return wrap;
+}
+document.addEventListener("click", (e) => { if (openMenu && !openMenu.contains(e.target)) setMenu(openMenu, false); });
+
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   // 맨 위에 열린 것 하나만 닫는다
   if (modals.length) { modals[modals.length - 1](); return; }
   if (!$("#trace-suggest").classList.contains("hidden")) { hideSuggest(); return; }
-  if (!$("#q-menu").classList.contains("hidden")) { toggleMenu(false); return; }
+  if (openMenu) { const b = openMenu.querySelector(".menu-btn"); setMenu(openMenu, false); b.focus(); return; }
+  if (Q.selecting) { setSelecting(false); return; }
   if (drawer) closeDrawer();
 });
 
 // ── 탭·해시·프로젝트 ─────────────────────────────────────
 
-const TAB_NAMES = { overview: "한눈에 보기", questions: "인수인계 질문", trace: "경로 추적", ask: "사수에게 묻기", cleanup: "고도화 준비" };
-const TAB_ORDER = ["overview", "questions", "trace", "ask", "cleanup"];
+// 프로젝트 지도(#overview)는 탭에서 빠졌지만 해시로는 그대로 열린다 (시작 화면·경로 추적의 링크)
+const TAB_NAMES = { home: "시작", overview: "프로젝트 지도", questions: "인수인계 질문", trace: "경로 추적", ask: "사수에게 묻기", cleanup: "고도화 준비" };
+const TAB_ORDER = ["home", "trace", "questions", "ask", "cleanup"];
 const views = {};
 const loaded = new Set();
 let currentView = null;
@@ -386,7 +422,7 @@ function parseHash() {
   const i = raw.indexOf("?");
   const view = i < 0 ? raw : raw.slice(0, i);
   const params = i < 0 ? null : Object.fromEntries(new URLSearchParams(raw.slice(i + 1)));
-  return { view: views[view] ? view : "overview", params };
+  return { view: views[view] ? view : "home", params };
 }
 
 function navigate(view, params) {
@@ -396,7 +432,7 @@ function navigate(view, params) {
 }
 
 function show(view, params) {
-  if (!views[view]) view = "overview";
+  if (!views[view]) view = "home";
   document.querySelectorAll("#tabs a").forEach((a) => {
     if (a.dataset.view === view) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -412,6 +448,8 @@ function show(view, params) {
   } else if (params && paramHandlers[view]) paramHandlers[view](params);
   // 인수인계 질문: 탭을 열 때마다 다른 사람이 저장한 답을 다시 불러온다
   if (view === "questions" && wasLoaded) pollQuestions();
+  // 시작 화면: 돌아올 때마다 숫자(답변 수 등)를 새로 그린다
+  if (view === "home" && wasLoaded) views.home();
   layoutOffsets();
 }
 
@@ -421,7 +459,7 @@ const paramHandlers = {
   ask: (p) => {
     if (!p.q) return;
     $("#ask-q").value = p.q;
-    $("#ask-target").value = p.target || "";
+    setAskTarget(p.target || "");
     $("#ask-form").requestSubmit();
   },
 };
@@ -438,8 +476,8 @@ async function loadProjects() {
     select.disabled = !data.projects.length;
     projectInfo = data.info ? { name: data.current, ...data.info } : null;
     const head = projectInfo && projectInfo.head && projectInfo.head !== "-" ? projectInfo.head.slice(0, 7) : "";
+    // 분석 기준은 프로젝트 선택의 툴팁으로만 보인다 (머리글을 줄이려고)
     const label = projectInfo ? `분석 기준 ${stamp(projectInfo.indexed_at)}${head ? ` · ${head}` : ""}` : "";
-    $("#indexed").textContent = label;
     select.title = projectInfo ? `${projectInfo.repo_path}\n${label}` : "";
   } catch {
     setKids(select, h("option", {}, "(불러오기 실패)"));
@@ -456,6 +494,8 @@ $("#project").addEventListener("change", async (e) => {
     Q.drafts.clear();
     Q.byDrafts.clear();
     Q.justSaved.clear();
+    Q.selected.clear();
+    Q.selecting = false;
     Q.open = null;
     traceState.last = null;
     setKids($("#ask-result"), );
@@ -469,6 +509,9 @@ $("#project").addEventListener("change", async (e) => {
   }
 });
 
+// [보기 설정] 메뉴: 테마·글자 크게
+wireMenu($("#view-more").closest(".menu-wrap"));
+
 // 밝게/어둡게: 기본은 OS 설정을 따른다. 저장값은 <head>의 스크립트가 먼저 적용한다
 (function theme() {
   const btn = $("#theme");
@@ -477,10 +520,7 @@ $("#project").addEventListener("change", async (e) => {
     : matchMedia("(prefers-color-scheme: dark)").matches);
   const paint = () => {
     const dark = isDark();
-    const label = dark ? "밝게 보기" : "어둡게 보기";
-    btn.setAttribute("aria-label", label);
-    btn.title = label;
-    setKids(btn, icon(dark ? "sun" : "moon", "i20"));
+    setKids(btn, icon(dark ? "sun" : "moon"), dark ? "밝게 보기" : "어둡게 보기");
   };
   btn.addEventListener("click", () => {
     const next = isDark() ? "light" : "dark";
@@ -495,7 +535,11 @@ $("#project").addEventListener("change", async (e) => {
 // 글자 크게 (회의실·빔프로젝터용)
 (function bigText() {
   const btn = $("#bigtext");
-  const paint = () => btn.setAttribute("aria-pressed", String(document.documentElement.classList.contains("big")));
+  const paint = () => {
+    const on = document.documentElement.classList.contains("big");
+    btn.setAttribute("aria-pressed", String(on));
+    setKids(btn, icon("a-large-small"), h("span", { class: "grow" }, "글자 크게"), on ? icon("check", "i14") : null);
+  };
   btn.addEventListener("click", () => {
     const on = document.documentElement.classList.toggle("big");
     store("sasu-big", on ? "1" : "0");
@@ -511,17 +555,60 @@ function getOverview() {
   return cache.overview;
 }
 
-// 모듈 이름 옆 한글 업무명 (없으면 이름만)
-function moduleOptionText(m) {
-  return m.label ? `${m.name} · ${m.label}` : m.name;
-}
-
 function getUnused() {
   if (!cache.unused) cache.unused = api("/api/unused").catch((err) => { delete cache.unused; throw err; });
   return cache.unused;
 }
 
 const overviewState = { sub: "modules", sortKey: "urls", sortDir: -1, filter: "", showAll: false, openModule: null };
+
+// ── 시작 (단계 고르기) ───────────────────────────────────
+// 네 시점마다 할 일 하나만: 단계를 고르면 그 화면으로 간다. 고른 단계는 기억해 표시만 한다(자동 이동 없음)
+
+const STAGES = [
+  { key: "first", name: "투입 첫날", icon: "route", desc: "맡은 화면이 어떤 코드·SQL·테이블을 쓰는지 봐요", go: "#trace", btn: "화면 경로 보기" },
+  { key: "handover", name: "인수인계 중", icon: "message-circle-question-mark", desc: "전임자에게 물을 질문에 답을 받아 적어요", go: "#questions", btn: "질문 보기" },
+  { key: "after", name: "전임자가 떠난 뒤", icon: "message-square-quote", desc: "코드가 왜 이런지 사수에게 물어요", go: "#ask", btn: "사수에게 묻기" },
+  { key: "modernize", name: "고도화 준비", icon: "brush-cleaning", desc: "바꾸기 전 동작을 엑셀로 남겨요", go: "#cleanup", btn: "기존 동작 목록 받기" },
+];
+
+views.home = async function () {
+  const root = $("#view-home");
+  if (!root.childElementCount) setKids(root, loading());
+  const [ov, qd] = await Promise.allSettled([getOverview(), getQuestions()]);
+  if (ov.status === "rejected" && ov.reason && ov.reason.code === "no_project") { setKids(root, noProject()); return; }
+  const urls = ov.status === "fulfilled" ? ov.value.counts.URL : null;
+  const p = qd.status === "fulfilled" ? questionProgress() : null;
+  const dash = h("b", {}, "–");
+  // 카드마다 핵심 숫자 한 줄
+  const nums = {
+    first: urls === null ? [dash] : [h("small", {}, "URL "), h("b", {}, fmt(urls)), h("small", {}, "개")],
+    handover: p ? [h("small", {}, `먼저 물을 ${p.topTotal}개 중 `), h("b", {}, fmt(p.topAnswered)), h("small", {}, "개 답변")] : [dash],
+    after: p ? [h("small", {}, "받은 답변 "), h("b", {}, fmt(p.answered)), h("small", {}, "개가 근거로 쓰여요")] : [dash],
+    modernize: urls === null ? [dash] : [h("small", {}, "URL "), h("b", {}, fmt(urls)), h("small", {}, "개")],
+  };
+  const last = store("sasu-stage");
+  const pick = (key) => () => store("sasu-stage", key);
+  const cards = STAGES.map((s, i) => h("article", { class: `card stage${s.key === last ? " last" : ""}`, "aria-labelledby": `stage-${s.key}` },
+    h("div", { class: "stage-top" }, h("span", { class: "stage-no" }, String(i + 1)), icon(s.icon, "i20"),
+      s.key === last ? h("span", { class: "chip ctl" }, `지난번: ${s.name}`) : null),
+    h("h3", { id: `stage-${s.key}` }, s.name),
+    h("p", {}, s.desc),
+    h("div", { class: "n" }, nums[s.key]),
+    s.key === "handover" && p ? h("div", { class: "progress", role: "progressbar", "aria-label": "먼저 물을 질문 답변 진행률", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(p.topPct) },
+      h("i", { style: `width:${p.topPct}%` })) : null,
+    h("div", { class: "stage-go" },
+      h("a", { class: "btn primary", href: s.go, onclick: pick(s.key) }, s.btn, icon("chevron-right", "i14")),
+      s.key === "first" ? h("a", { href: "#overview", onclick: pick(s.key) }, "프로젝트 지도") : null)));
+  setKids(root,
+    h("h2", { id: "home-title" }, "지금 어느 단계예요?"),
+    h("p", { class: "lead" }, "단계를 고르면 그때 할 일만 보여 드려요."),
+    h("div", { class: "stages" }, cards),
+    h("p", { class: "legend-line" }, icon("info", "i14"), "사수는 코드·SQL·받은 답변만 근거로 답하고, 근거가 없으면 '모름'이라고 말합니다."));
+};
+
+// ── 프로젝트 지도 (7.1, 탭 밖) ───────────────────────────
+// 할 일 카드는 시작 화면으로 옮겼다. 여기는 규모 흐름 한 줄 + 하위 탭(모듈 / 함께 쓰는 테이블 / 기술 스택)만
 
 views.overview = async function () {
   const root = $("#view-overview");
@@ -533,7 +620,6 @@ views.overview = async function () {
     setKids(root, errorBox(err, () => views.overview()));
     return;
   }
-  const [qd, unused] = await Promise.all([getQuestions().catch(() => null), getUnused().catch(() => null)]);
   const b = data.build;
   const name = (projectInfo && projectInfo.name) || $("#project").value;
   const sub = [
@@ -542,66 +628,7 @@ views.overview = async function () {
     projectInfo && projectInfo.head && projectInfo.head !== "-" ? `커밋 ${projectInfo.head.slice(0, 7)}` : null,
   ].filter(Boolean).join(" · ");
 
-  const parts = [h("h2", { id: "overview-title" }, name), h("p", { class: "lead" }, sub)];
-
-  // 할 일 카드 4개
-  const cards = [];
-  if (qd) {
-    const p = questionProgress();
-    cards.push(h("a", { class: "card todo-card", href: "#questions" },
-      h("div", { class: "k" }, icon("message-circle-question-mark"), "질문 답변"),
-      h("div", { class: "n" }, `${p.topAnswered}`, h("small", {}, `/ ${p.topTotal} 먼저 물을 질문`)),
-      h("div", { class: "progress", role: "progressbar", "aria-label": "먼저 물을 질문 답변 진행률", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(p.topPct) },
-        h("i", { style: `width:${p.topPct}%` })),
-      h("div", { class: "s", style: "margin-top:6px" }, `먼저 물을 ${p.topTotal}개 중 ${p.topAnswered} · 전체 ${fmt(p.total)}개 중 ${fmt(p.answered)}`)));
-  }
-  const cov = data.coverage;
-  if (cov.total) {
-    const segs = [
-      ["DB까지 연결", cov.to_sql, "var(--ord-3)"],
-      ["코드에서 끝남", cov.code_only, "var(--ord-2)"],
-      ["컨트롤러에서 끝남", cov.handler_only, "var(--ord-1)"],
-    ];
-    const pct = (n) => (n / cov.total) * 100;
-    cards.push(h("a", { class: "card todo-card", href: "#trace", title: "동적 ID로 추정한 연결 포함" },
-      h("div", { class: "k" }, icon("route"), "URL → SQL 연결"),
-      h("div", { class: "n" }, `${Math.round(pct(cov.to_sql))}%`, h("small", {}, `URL ${fmt(cov.total)}개 중 ${fmt(cov.to_sql)}`)),
-      h("div", { class: "cov", "aria-hidden": "true" }, segs.map(([, n, c]) => h("i", { style: `width:${pct(n)}%;background:${c}` }))),
-      h("div", { class: "s" }, segs.map(([label, n, c], i) => h("div", {},
-        h("span", { style: `display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;background:${c}` }),
-        `${label} ${fmt(n)}${i === 0 ? "" : ` (${pct(n).toFixed(1)}%)`}`))),
-      h("div", { class: "s explain" }, "URL에서 코드를 따라가 SQL까지 닿는지 셉니다. 고도화 준비의 '부르는 곳 못 찾은 URL'(어느 화면도 부르지 않는 URL)과는 다른 숫자입니다.")));
-  }
-  const bs = data.broken_sql;
-  if (bs && typeof bs === "object") {
-    // 없는 SQL 호출: URL에서 이어지는 곳(실제 실행 오류 위험)과 이어지지 않는 곳을 나눠 보인다
-    const reach = bs.reachable || 0;
-    const unreach = bs.unreachable || 0;
-    cards.push(h("a", { class: `card todo-card${reach ? " danger" : ""}`, href: "#cleanup" },
-      h("div", { class: "k" }, icon(reach ? "triangle-alert" : "unlink"), "없는 SQL 호출"),
-      h("div", { class: "n" }, fmt(reach), h("small", {}, "곳 · URL에서 이어짐")),
-      reach
-        ? h("div", { class: "s risk" }, icon("triangle-alert", "i12"), "실행 오류 위험 — 화면에서 부르면 Mapper에 없는 SQL을 불러요.")
-        : h("div", { class: "s" }, "URL에서 이어지는 코드는 없는 SQL을 부르지 않아요."),
-      unreach ? h("div", { class: "s" }, `이어지지 않는 ${fmt(unreach)}곳은 고도화 준비에서 확인하세요 →`) : null));
-  } else if (unused) {
-    const broken = unused.sections.find((s) => s.kind === "broken_sql");
-    const n = broken ? broken.items.length : 0;
-    cards.push(h("a", { class: `card todo-card${n ? " danger" : ""}`, href: "#cleanup" },
-      h("div", { class: "k" }, icon(n ? "triangle-alert" : "unlink"), "없는 SQL 호출"),
-      h("div", { class: "n" }, fmt(n), h("small", {}, "곳")),
-      h("div", { class: "s" }, n ? "코드가 부르는데 Mapper에 없어요. URL에서 이어지는 곳이면 실행 오류가 나요." : "코드가 부르는 SQL이 모두 Mapper에 있어요.")));
-  }
-  cards.push(h("a", {
-    class: "card todo-card", href: "#overview",
-    onclick: (e) => { e.preventDefault(); overviewState.sub = "tables"; renderOverviewSub(data); $("#ov-sub").scrollIntoView({ block: "start" }); },
-  },
-  h("div", { class: "k" }, icon("table-2"), "여러 모듈이 함께 쓰는 테이블"),
-  h("div", { class: "n" }, fmt(data.tables.length), h("small", {}, "개")),
-  h("div", { class: "s" }, "바꾸면 여러 기능에 영향이 가요.")));
-  parts.push(h("div", { class: "todo" }, cards));
-
-  parts.push(gradeLegendLine());
+  const parts = [h("h2", { id: "overview-title" }, `프로젝트 지도 · ${name}`), h("p", { class: "lead" }, sub)];
 
   // 규모 흐름 띠
   const c = data.counts;
@@ -614,6 +641,15 @@ views.overview = async function () {
   });
   if (c.JSP !== undefined) flow.push(h("span", { class: "sep", "aria-hidden": "true" }, "·"), h("span", {}, "화면(JSP) ", h("b", {}, fmt(c.JSP))));
   if (c["모듈"] !== undefined) flow.push(h("span", { class: "sep", "aria-hidden": "true" }, "·"), h("span", {}, "모듈 ", h("b", {}, fmt(c["모듈"]))));
+  // URL → SQL 연결률 (예전 할 일 카드의 숫자): 나눈 값은 툴팁으로
+  const cov = data.coverage;
+  if (cov && cov.total) {
+    const pct = (n) => `${((n / cov.total) * 100).toFixed(1)}%`;
+    flow.push(h("span", { class: "sep", "aria-hidden": "true" }, "·"), h("span", {
+      class: "term", tabindex: "0",
+      title: `DB까지 연결 ${fmt(cov.to_sql)} · 코드에서 끝남 ${fmt(cov.code_only)} (${pct(cov.code_only)}) · 컨트롤러에서 끝남 ${fmt(cov.handler_only)} (${pct(cov.handler_only)})\n동적 ID로 추정한 연결 포함`,
+    }, "DB까지 연결 ", h("b", {}, `${Math.round((cov.to_sql / cov.total) * 100)}%`)));
+  }
   parts.push(h("div", { class: "card flow", "aria-label": "규모" }, flow));
 
   // 하위 탭
@@ -819,6 +855,7 @@ const Q = {
   justSaved: new Set(),  // 방금 저장한 질문: 미답변 목록에서도 잠시 남겨 [이 코드로 묻기]를 보인다
   open: null,            // 펼친 단위 key ("q:4" 또는 "t:대상")
   selected: new Set(),   // 골라 둔 질문 id (내려받기용, 검색·필터를 바꿔도 남는다)
+  selecting: false,      // [질문지 ▾ > 골라서 내려받기…]를 고른 동안만 행 앞 고르기 칸을 보인다
 };
 let qPromise = null;
 
@@ -885,7 +922,6 @@ async function pollQuestions() {
     const anchorTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
     setQuestions(d);
     if (currentView !== "questions" || !loaded.has("questions")) return;
-    fillKindSelect();
     renderQuestions();
     const again = keep ? document.getElementById(keep.id)
       : (Q.open ? list.querySelector(`.qunit[data-key="${CSS.escape(Q.open)}"]`) : null);
@@ -917,6 +953,7 @@ function questionProgress() {
 const tierOf = (rank) => (rank < TOP ? 0 : rank < NEXT ? 1 : 2);
 const TIER_NAME = ["먼저 물을 질문", "다음", "나중"];
 const TIER_SHORT = ["먼저", "다음", "나중"];
+const TIE_HELP = "동점 = 같은 점수라 순위 경계(20·50위)에서 갈린 질문이에요";
 
 views.questions = async function (params) {
   const list = $("#q-list");
@@ -927,17 +964,9 @@ views.questions = async function (params) {
     setKids(list, errorBox(err, () => { loaded.delete("questions"); views.questions(); }));
     return;
   }
-  fillKindSelect();
   renderQuestions();
   if (params && params.q) openQuestionById(Number(params.q));
 };
-
-function fillKindSelect() {
-  const present = new Set(Q.data.items.map((q) => q.kind));
-  setKids($("#q-kind"), h("option", { value: "" }, "모든 종류"),
-    ...Object.entries(Q.data.kinds).filter(([k]) => present.has(k)).map(([k, label]) =>
-      h("option", { value: k, selected: k === Q.kind }, label)));
-}
 
 function inOpenUnit(q) {
   return Q.open !== null && (Q.open === `q:${q.id}` || (q.target && Q.open === `t:${q.target}`));
@@ -945,9 +974,10 @@ function inOpenUnit(q) {
 
 function filteredItems() {
   const needle = Q.search.trim().toLowerCase();
-  // 방금 저장한 질문·펼친 질문·작성 중인 질문은 상태가 바뀌어도 그 자리에 남긴다
+  // 방금 답한 질문·펼친 질문·작성 중인 질문은 상태가 바뀌어도 그 자리에 남긴다.
+  // 건너뛴 질문은 미답변에 남기지 않는다 (탭 배지·필터 숫자·"n개 표시"가 같은 수가 되게)
   const passStatus = (q) => Q.status === "all" || q.status === Q.status
-    || (Q.status === "open" && (Q.justSaved.has(q.id) || inOpenUnit(q) || hasDraft(q)));
+    || (Q.status === "open" && q.status !== "skipped" && (Q.justSaved.has(q.id) || inOpenUnit(q) || hasDraft(q)));
   return Q.data.items.filter((q) => passStatus(q)
     && (!Q.kind || q.kind === Q.kind)
     && (!needle || [q.question, q.target, q.file_path, q.why, q.answer, q.label, q.module_label, q.module]
@@ -975,7 +1005,7 @@ function renderQuestions(opts = {}) {
   const d = Q.data;
   if (!d) return;
   const p = questionProgress();
-  $("#q-progress-text").textContent = `먼저 물을 ${p.topTotal}개 중 ${p.topAnswered}개 · 전체 ${fmt(p.total)}개 중 ${fmt(p.answered)}개 답변 완료`;
+  $("#q-progress-text").textContent = `먼저 물을 ${p.topTotal}개 중 ${p.topAnswered}개 · 전체 ${fmt(p.total)}개 중 ${fmt(p.answered)}개 답변 완료 · 건너뜀 ${fmt(d.skipped)}`;
   $("#q-progress").style.width = `${p.topPct}%`;
   $("#q-progressbar").setAttribute("aria-valuenow", String(p.topPct));
   const counts = { open: d.open, answered: d.answered, skipped: d.skipped, all: d.total };
@@ -983,17 +1013,17 @@ function renderQuestions(opts = {}) {
     b.textContent = `${{ open: "미답변", answered: "답변 완료", skipped: "건너뜀", all: "전체" }[b.dataset.status]} ${fmt(counts[b.dataset.status])}`;
     b.setAttribute("aria-pressed", String(b.dataset.status === Q.status));
   });
-  $("#q-kind").value = Q.kind;
   renderKinds();
   updateQuestionCount();
 
   const list = $("#q-list");
+  list.classList.toggle("selecting", Q.selecting);
   const items = filteredItems();
   // 보이는 질문만 내려받기 (서버가 ids를 모르면 전체가 내려온다)
   const exp = $("#q-export-visible");
   exp.href = items.length ? `/api/questions/export?ids=${items.map((q) => q.id).join(",")}` : "/api/questions/export";
   exp.setAttribute("aria-disabled", String(!items.length));
-  $("#q-export-visible-text").textContent = `보이는 ${fmt(items.length)}개 질문지 내려받기`;
+  $("#q-export-visible-text").textContent = `보이는 ${fmt(items.length)}개 내려받기`;
   paintSelection(items);
   if (Q.lastCount !== items.length) {
     Q.lastCount = items.length;
@@ -1001,8 +1031,15 @@ function renderQuestions(opts = {}) {
   }
   const STATUS_NAME = { open: "미답변", answered: "답변 완료", skipped: "건너뜀", all: "전체" };
   const conds = [STATUS_NAME[Q.status], Q.kind ? d.kinds[Q.kind] : null, Q.search.trim() ? `‘${Q.search.trim()}’` : null].filter(Boolean).join(" · ");
+  // 종류로 거른 중이면(종류별 막대는 접혀 있을 수 있으니) 여기서 바로 풀 수 있게
+  // "n개 표시"는 그 상태인 질문만 센다 (방금 답해 잠시 남겨 둔 질문은 따로 적는다)
+  const matching = items.filter((q) => Q.status === "all" || q.status === Q.status).length;
+  const lingering = items.length - matching;
   const head = h("div", { class: "qcount", id: "q-result-head", tabindex: "-1" },
-    h("b", {}, `${fmt(items.length)}개 표시`), h("span", { class: "muted" }, ` · ${conds}`));
+    h("b", {}, `${fmt(matching)}개 표시`), h("span", { class: "muted" }, ` · ${conds}`),
+    lingering ? h("span", { class: "muted xs" }, ` · 답한 질문 ${lingering}개도 함께 보여요`) : null,
+    Q.kind ? h("button", { class: "btn sm", type: "button", style: "margin-left:8px",
+      onclick: () => { Q.kind = ""; Q.open = null; renderQuestions({ focus: "#q-result-head" }); } }, icon("x", "i14"), "종류 거름 풀기") : null);
   if (!items.length) {
     let msg;
     if (d.total === 0) {
@@ -1015,7 +1052,7 @@ function renderQuestions(opts = {}) {
         h("button", { class: "btn", type: "button", onclick: () => setStatus("answered") }, "답변 완료 보기"));
     } else if (Q.status === "skipped" && !Q.search.trim() && !Q.kind) {
       msg = emptyState("circle-check", "건너뛴 질문이 없어요",
-        "질문을 펼쳐 [건너뜀]을 누르면 이유와 함께 여기에 모여요. 되돌리면 다시 미답변이 돼요.",
+        "질문을 펼쳐 [건너뛰기]를 누르면 이유와 함께 여기에 모여요. 되돌리면 다시 미답변이 돼요.",
         h("button", { class: "btn", type: "button", onclick: () => setStatus("open") }, "미답변 보기"));
     } else if (Q.search.trim()) {
       msg = emptyState("search", noMatch(Q.search.trim(), "질문이"),
@@ -1036,11 +1073,11 @@ function renderQuestions(opts = {}) {
     const t = tierOf(u.rank);
     if (t !== tier) {
       tier = t;
-      const n = units.filter((x) => tierOf(x.rank) === t).reduce((s, x) => s + x.items.length, 0);
+      const n = units.filter((x) => tierOf(x.rank) === t)
+        .reduce((s, x) => s + x.items.filter((q) => Q.status === "all" || q.status === Q.status).length, 0);
       const range = t === 0 ? `우선 1~${TOP}위` : t === 1 ? `우선 ${TOP + 1}~${NEXT}위` : `우선 ${NEXT + 1}위부터`;
-      const tie = units.some((x) => tierOf(x.rank) === t && x.items.some((q) => Q.ties.has(q.priority)));
-      out.push(h("div", { class: "qsec" }, TIER_NAME[t], h("span", {}, `${range} · 이 목록에 ${n}개`),
-        tie ? h("span", { class: "tie-note" }, "동점 = 같은 점수라 순위 경계(20·50위)에서 갈린 질문") : null));
+      // "동점" 뜻은 줄마다 붙는 동점 칩의 툴팁으로만
+      out.push(h("div", { class: "qsec" }, TIER_NAME[t], h("span", {}, `${range} · 이 목록에 ${n}개`)));
     }
     out.push(renderUnit(u, t));
   }
@@ -1058,6 +1095,8 @@ function renderKinds() {
     return { k, label: d.kinds[k], n: its.length, a: its.filter((q) => q.status === "answered").length };
   }).sort((x, y) => y.n - x.n);
   const max = Math.max(1, ...stats.map((s) => s.n));
+  // 접힌 머리에 지금 거른 종류를 보인다
+  $("#q-kinds-sum").textContent = Q.kind ? ` · 지금 ${d.kinds[Q.kind]}만 보는 중` : ` · ${stats.filter((s) => s.n).length}종류`;
   setKids($("#q-kinds"), ...stats.map((s) => h("button", {
     type: "button", class: s.n ? null : "none", "aria-pressed": String(Q.kind === s.k), disabled: !s.n,
     title: `${s.label}: 질문 ${s.n}개 중 ${s.a}개 답변 완료`,
@@ -1091,7 +1130,7 @@ function renderUnit(u, sectionTier) {
   if (u.items.length > 1) {
     const short = u.target.split(".").pop();
     box.append(h("div", { class: "qgroup-line" },
-      selBox(u.items.map((q) => q.id), `${short} 묶음 ${u.items.length}개 모두 고르기`),
+      Q.selecting ? selBox(u.items.map((q) => q.id), `${short} 묶음 ${u.items.length}개 모두 고르기`) : null,
       h("button", { class: "qgroup-head", type: "button", "aria-expanded": String(open), "data-key": u.key, onclick: toggle,
         title: u.target },
       icon(open ? "chevron-down" : "chevron-right", "i14"), h("span", { class: "name" }, short), h("span", { class: "muted" }, `· ${u.items.length}`),
@@ -1106,10 +1145,10 @@ function qRow(q, u, sectionTier, open, toggle, inGroup) {
   const rank = Q.rank.get(q.id);
   const tags = [statusChip(q)];
   if (hasDraft(q)) tags.push(h("span", { class: "chip dashed" }, "작성 중"));
-  if (Q.ties.has(q.priority)) tags.push(h("span", { class: "chip", title: "같은 점수로 순위 경계가 갈렸어요" }, "동점"));
+  if (Q.ties.has(q.priority)) tags.push(h("span", { class: "chip", title: TIE_HELP }, "동점"));
   if (inGroup && tierOf(rank) !== sectionTier) tags.push(h("span", { class: "chip", title: `우선 ${rank + 1}위` }, TIER_SHORT[tierOf(rank)]));
   const row = h("div", { class: "row", style: "gap:0;flex-wrap:nowrap" },
-    selBox([q.id], `Q${q.id} 고르기`, inGroup),
+    Q.selecting ? selBox([q.id], `Q${q.id} 고르기`, inGroup) : null,
     h("button", { class: "qrow", type: "button", "aria-expanded": String(open), "data-key": u.key, "data-qid": q.id, onclick: toggle },
     h("span", { class: "qid" }, `Q${q.id}`),
     h("span", { class: "chip kindc" }, icon(KIND_ICON[q.kind] || "info", "i12"), q.kind_label),
@@ -1124,7 +1163,7 @@ function qRow(q, u, sectionTier, open, toggle, inGroup) {
   return row;
 }
 
-// ── 질문 골라 내려받기: 행마다 고르기 칸, 묶음 머리 칸 = 묶음 전체 ──
+// ── 질문 골라 내려받기: 선택 모드일 때만 행마다 고르기 칸, 묶음 머리 칸 = 묶음 전체 ──
 function selBox(ids, label, sub) {
   const input = h("input", { type: "checkbox", "data-ids": ids.join(","), "aria-label": label });
   paintSelBox(input);
@@ -1143,27 +1182,32 @@ function paintSelBox(input) {
   input.indeterminate = n > 0 && n < ids.length;
 }
 
-// 고르기 칸 표시와 툴바의 [선택한 n개 내려받기]·[선택 해제]를 맞춘다 (목록은 다시 그리지 않음 → 포커스 그대로)
+// 고르기 칸 표시와 선택 모드 띠("n개 선택됨 [내려받기] [취소]")를 맞춘다 (목록은 다시 그리지 않음 → 포커스 그대로)
 function paintSelection(items) {
   document.querySelectorAll("#q-list .qsel input").forEach(paintSelBox);
-  const bar = $("#q-selbar");
+  $("#q-selbar").classList.toggle("hidden", !Q.selecting);
+  if (!Q.selecting) return;
   const n = Q.selected.size;
-  bar.classList.toggle("hidden", !n);
-  if (!n) return;
+  $("#q-selbar-text").textContent = `${fmt(n)}개 선택됨`;
   const ids = [...Q.selected].sort((a, b) => (Q.rank.get(a) ?? 0) - (Q.rank.get(b) ?? 0));
   const link = $("#q-export-selected");
-  link.href = `/api/questions/export?ids=${ids.join(",")}`;
-  $("#q-export-selected-text").textContent = `선택한 ${fmt(n)}개 내려받기`;
+  link.href = n ? `/api/questions/export?ids=${ids.join(",")}` : "/api/questions/export";
+  link.setAttribute("aria-disabled", String(!n));
   const shown = new Set((items || filteredItems()).map((q) => q.id));
   const away = ids.filter((id) => !shown.has(id)).length;
-  link.title = away ? `고른 질문 ${n}개를 엑셀로 받아요 (지금 목록에 안 보이는 ${away}개 포함)` : `고른 질문 ${n}개만 엑셀로 받아요`;
+  link.title = !n ? "먼저 질문을 고르세요" : away ? `고른 질문 ${n}개를 엑셀로 받아요 (지금 목록에 안 보이는 ${away}개 포함)` : `고른 질문 ${n}개만 엑셀로 받아요`;
 }
 
-function clearSelection() {
-  Q.selected.clear();
-  paintSelection();
-  toast("고른 질문을 모두 해제했어요");
-  $("#q-search").focus();
+// 선택 모드 켜기/끄기. 끄면 고른 것도 지운다
+function setSelecting(on) {
+  Q.selecting = on;
+  if (!on) Q.selected.clear();
+  renderQuestions();
+  if (on) {
+    announce("행 앞 칸을 눌러 내려받을 질문을 고르세요");
+    const first = $("#q-list .qsel input");
+    if (first) first.focus();
+  } else $("#q-sheet").focus();
 }
 
 function toggleUnit(key, el) {
@@ -1277,11 +1321,10 @@ function memberBlock(q, u, ctx) {
     h("label", { for: skipId, class: "xs" }, "건너뛰는 이유"), reason,
     h("button", { class: "btn sm primary", type: "button", onclick: () => doSkip() }, "건너뜀으로 저장"),
     h("button", { class: "btn sm", type: "button", onclick: () => { skipRow.classList.add("hidden"); skipBtn.focus(); } }, "취소"));
+  // 건너뛸 때는 '답한 사람'을 보내지 않는다 (답하지 않은 사람이 답한 사람으로 남던 문제, 시험 N06)
   const doSkip = async () => {
-    const name = by.value.trim();
     try {
-      const r = await api(`/api/questions/${q.id}/skip`, { json: { reason: reason.value.trim(), by: name || null } });
-      if (name) store("sasu-answered-by", name);
+      const r = await api(`/api/questions/${q.id}/skip`, { json: { reason: reason.value.trim(), by: null } });
       Object.assign(q, r);
       Q.drafts.delete(q.id);
       Q.justSaved.add(q.id);
@@ -1301,23 +1344,27 @@ function memberBlock(q, u, ctx) {
       const hidden = skipRow.classList.toggle("hidden");
       e.currentTarget.setAttribute("aria-expanded", String(!hidden));
       if (!hidden) reason.focus();
-    } }, "건너뜀");
+    } }, "건너뛰기");
 
   const rank = Q.rank.get(q.id);
-  const actions = h("div", { class: "row" }, save,
-    q.status === "answered" && q.answer ? h("button", { class: "btn sm", type: "button", onclick: () => clearAnswer(q) }, icon("x", "i14"), "답변 지우기") : null,
-    skipBtn,
-    h("button", { class: "btn sm", type: "button", onclick: () => showDraft(q) }, icon("mail", "i14"), "메시지 만들기"),
-    q.target || q.file_path ? h("button", { class: "btn sm", type: "button", onclick: () => askAbout(q) }, icon("message-square-quote", "i14"), "사수에게 묻기") : null);
+  // 주 버튼 [답변 저장], 보조 [건너뛰기], 나머지(메시지 만들기·사수에게 묻기·답변 지우기)는 [⋯] 안
+  const more = wireMenu(h("div", { class: "menu-wrap" },
+    h("button", { class: "btn sm icon-only menu-btn", type: "button", "aria-label": `Q${q.id} 더 보기`, title: "메시지 만들기·사수에게 묻기·답변 지우기",
+      "aria-haspopup": "true", "aria-expanded": "false" }, icon("ellipsis", "i14")),
+    h("div", { class: "card menu hidden" },
+      h("button", { type: "button", onclick: () => showDraft(q) }, icon("mail"), "메시지 만들기"),
+      q.target || q.file_path ? h("button", { type: "button", onclick: () => askAbout(q) }, icon("message-square-quote"), "사수에게 묻기") : null,
+      q.status === "answered" && q.answer ? h("button", { type: "button", onclick: () => clearAnswer(q) }, icon("x"), "답변 지우기") : null)));
+  const actions = h("div", { class: "row" }, save, skipBtn, more);
   const savedInfo = [q.answered_by, localDate(q.answered_at)].filter(Boolean).join(" · ");
+  // 질문 문장·종류·상태·업무명은 바로 위 줄에 있다 (펼친 줄은 질문을 줄바꿈해 전문을 보인다).
+  // 묶음에서는 어느 질문의 답 칸인지 알 수 있게 번호만 작게. 좁은 화면에서 줄에 안 보이는 종류·업무명만 .dup로
   return h("div", { class: "member" },
-    h("div", { class: "qtext" }, u.items.length > 1 ? h("span", { class: "qid mono muted xs" }, `Q${q.id} `) : null, q.question),
+    u.items.length > 1 ? h("div", { class: "qtext-ref" }, h("span", { class: "qid mono" }, `Q${q.id}`), " 답 적기") : null,
     h("div", { class: "meta" },
       h("span", {}, `우선 ${rank + 1}위`),
-      Q.ties.has(q.priority) ? h("span", { class: "chip", title: "같은 점수라 순위 경계(20·50위)에서 갈린 질문이에요" }, "동점") : null,
-      h("span", { class: "chip" }, icon(KIND_ICON[q.kind] || "info", "i12"), q.kind_label),
-      statusChip(q),
-      q.label ? h("span", { class: "qko-meta", title: q.module ? `모듈 ${q.module}${q.module_label ? ` (${q.module_label})` : ""}` : null },
+      h("span", { class: "chip dup" }, icon(KIND_ICON[q.kind] || "info", "i12"), q.kind_label),
+      q.label ? h("span", { class: "qko-meta dup", title: q.module ? `모듈 ${q.module}${q.module_label ? ` (${q.module_label})` : ""}` : null },
         moduleHead(q.module_label) && !q.label.startsWith(moduleHead(q.module_label)) ? `${moduleHead(q.module_label)} · ${q.label}` : q.label) : null,
       q.file_path ? locLink(`${q.file_path}:${q.line || 1}`, `${fileName(q.file_path)}:${q.line || 1}`) : null),
     h("div", { class: "why" }, h("b", {}, "묻는 이유"), q.why),
@@ -1504,14 +1551,14 @@ function askAbout(q) {
   const target = q.target && /^[\w.]+\.\w+$/.test(q.target) ? q.target : (q.file_path ? `${q.file_path}:${q.line}` : "");
   navigate("ask");
   $("#ask-q").value = q.question;
-  $("#ask-target").value = target;
+  setAskTarget(target);
   $("#ask-form").requestSubmit();
 }
 
 function askWithTarget(target) {
   closeDrawer(false);
   navigate("ask");
-  $("#ask-target").value = target;
+  setAskTarget(target);
   $("#ask-q").focus();
   toast("대상 코드를 채웠어요. 질문을 적고 물어보세요.");
 }
@@ -1525,7 +1572,6 @@ function questionBadge(q) {
 }
 
 document.querySelectorAll("#q-status button").forEach((b) => b.addEventListener("click", () => setStatus(b.dataset.status)));
-$("#q-kind").addEventListener("change", (e) => { Q.kind = e.target.value; Q.open = null; renderQuestions(); });
 let searchTimer = null;
 $("#q-search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
@@ -1543,7 +1589,13 @@ $("#q-search").addEventListener("keydown", (e) => {
 $("#q-export-visible").addEventListener("click", (e) => {
   if (e.currentTarget.getAttribute("aria-disabled") === "true") { e.preventDefault(); toast("보이는 질문이 없어요"); }
 });
-$("#q-select-clear").addEventListener("click", clearSelection);
+// [질문지 ▾] 메뉴와 선택 모드
+wireMenu($("#q-sheet").closest(".menu-wrap"));
+$("#q-select-mode").addEventListener("click", () => setSelecting(true));
+$("#q-select-cancel").addEventListener("click", () => setSelecting(false));
+$("#q-export-selected").addEventListener("click", (e) => {
+  if (e.currentTarget.getAttribute("aria-disabled") === "true") { e.preventDefault(); toast("먼저 질문을 고르세요"); }
+});
 $("#q-import").addEventListener("click", () => $("#q-import-file").click());
 $("#q-import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -1567,21 +1619,7 @@ $("#q-import-file").addEventListener("change", async (e) => {
   e.target.value = "";
 });
 
-function toggleMenu(open) {
-  const menu = $("#q-menu");
-  menu.classList.toggle("hidden", !open);
-  $("#q-more").setAttribute("aria-expanded", String(open));
-  if (open) {
-    // 좁은 화면에서 버튼이 왼쪽으로 줄바꿈되면 메뉴가 화면 밖으로 잘리지 않게 붙는 쪽을 바꾼다
-    menu.classList.remove("to-left");
-    if (menu.getBoundingClientRect().left < 8) menu.classList.add("to-left");
-    $("#q-refresh").focus();
-  }
-}
-$("#q-more").addEventListener("click", () => toggleMenu($("#q-menu").classList.contains("hidden")));
-document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) toggleMenu(false); });
 $("#q-refresh").addEventListener("click", () => {
-  toggleMenu(false);
   const when = projectInfo ? stamp(projectInfo.indexed_at) : "마지막 분석";
   modal("질문 다시 만들기", [
     h("p", { style: "margin:0" }, withCode(`분석 기준(${when})으로 질문을 다시 만들어요. 받은 답변은 그대로예요. 코드가 바뀌었으면 먼저 터미널에서 \`sasu index\`를 실행하세요.`)),
@@ -1594,7 +1632,6 @@ $("#q-refresh").addEventListener("click", () => {
         close();
         toast(`질문을 다시 만들었어요: 새 질문 ${r.new}개, 사라진 질문 ${r.stale}개. 받은 답변은 그대로예요`);
         await getQuestions(true);
-        fillKindSelect();
         renderQuestions();
       } catch (err) {
         close();
@@ -1715,16 +1752,20 @@ async function suggest(q) {
   const token = ++suggestToken;
   if (!q.trim()) { hideSuggest(); return; }
   try {
-    const data = await api(`/api/urls?q=${encodeURIComponent(cleanUrl(q).path)}&limit=30`);
+    const c = cleanUrl(q);
+    let data = await api(`/api/urls?q=${encodeURIComponent(c.path)}&limit=30`);
+    // 붙여 넣은 브라우저 주소: Enter 때처럼 컨텍스트 경로(첫 조각)를 떼고도 찾아 본다
+    const segs = c.path.split("/").filter(Boolean);
+    if (!data.urls.length && c.path.startsWith("/") && segs.length >= 2) {
+      data = await api(`/api/urls?q=${encodeURIComponent(`/${segs.slice(1).join("/")}`)}&limit=30`);
+    }
     if (token !== suggestToken) return;
     suggestIndex = -1;
     rememberUrlLabels(data.labels);
     if (!data.urls.length) {
-      setKids(box, h("li", { class: "more", role: "presentation" },
-        `${noMatch(q.trim(), "URL이")}. URL 일부${HANGUL.test(q) ? "" : "나 업무명(예: 휴가)"}으로 찾아 보세요.`));
-      box.classList.remove("hidden");
-      $("#trace-q").setAttribute("aria-expanded", "true");
-      announce(noMatch(q.trim(), "URL이"));
+      // 입력 중에는 "맞는 URL이 없어요"를 띄우지 않는다 (붙여 넣은 주소는 Enter 때 정리해서 찾는다).
+      // 정말 없는지는 Enter 뒤 결과에서 알려 준다
+      hideSuggest();
       return;
     }
     setKids(box, ...data.urls.map((u, i) => h("li", { id: `sug-${i}`, role: "option", "aria-selected": "false", "data-url": u, onclick: () => traceUrl(u) },
@@ -1852,8 +1893,6 @@ function renderTrace(data) {
     n.children.forEach(walk);
   };
   walk(data.tree);
-  const reads = stmts.filter((s) => !WRITE_VERBS.has(splitStatement(s.label).verb)).length;
-  const writes = stmts.length - reads;
   const dyn = stmts.filter(isEstimated).length;
   // 테이블별 CRUD. 추정 연결로만 닿은 칸은 "U?"처럼 따로 센다
   const tinfo = new Map();
@@ -1872,6 +1911,9 @@ function renderTrace(data) {
     }
   }
   const anyGuess = [...tinfo.values()].some((x) => ["C", "R", "U", "D"].some((k) => x[k] === 1));
+  // 요약 숫자는 아래 테이블 칩·CRUD 표와 같은 기준: 서로 다른 테이블 수 (SQL 수가 아니다)
+  const readTables = [...tinfo.values()].filter((x) => x.R).length;
+  const writeTables = [...tinfo.values()].filter((x) => x.C || x.U || x.D).length;
   const ctx = { first: new Map(), qmap: new Map(), treeEl: null };
   if (Q.data) for (const q of Q.data.items) if (q.target) ctx.qmap.set(q.target, [...(ctx.qmap.get(q.target) || []), q]);
 
@@ -1889,14 +1931,17 @@ function renderTrace(data) {
 
   const summary = h("div", { class: "card trace-sum", tabindex: "-1" },
     h("div", { class: "row", style: "gap:8px" },
-      h("span", {}, [`메서드 ${methods}`, `SQL ${stmts.length}`, `읽기 ${reads}`, writes ? `쓰기 ${writes}` : "이 소스에서 쓰기 없음"].join(" · "),
+      h("span", {}, [`메서드 ${methods}`, `SQL ${stmts.length}`, `읽는 테이블 ${readTables}`, writeTables ? `쓰는 테이블 ${writeTables}` : "이 소스에서 쓰기 없음"].join(" · "),
         " · ", h("span", { class: "term", title: TERM.estimated }, `추정 연결 ${dyn}`)),
       broken.size ? h("span", { class: "chip bad", title: `Mapper에 없는 SQL: ${[...broken].join(", ")}` }, icon("triangle-alert", "i12"), `없는 SQL ${broken.size}`) : null),
+    // 범례는 입력 칸 아래 [보기 옵션] 안에 있다. 여기는 이 결과에 나온 것만 짧게
     tinfo.size ? h("div", { class: "tabchips" }, [...tinfo].map(([t, x]) => tableChip(t, x))) : h("div", { class: "muted xs" }, "닿는 테이블이 없어요"),
-    h("div", { class: "trace-legend" },
-      h("span", {}, h("span", { class: "dashed-tag" }, "추정 연결"), " ", TERM.estimated),
-      external ? h("span", {}, h("span", { class: "dashed-tag" }, "저장소 밖 · 빈"), " ", TERM.external) : null,
-      broken.size ? h("span", {}, h("span", { class: "chip bad risk" }, icon("triangle-alert", "i12"), "없는 SQL 호출"), " ", TERM.broken) : null));
+    external || broken.size ? h("div", { class: "muted xs" }, [
+      external ? `저장소 밖 빈 ${external}개(안쪽은 못 따라감)` : null,
+      broken.size ? `없는 SQL 호출 ${broken.size}개(실행하면 오류)` : null,
+    ].filter(Boolean).join(" · "), " — 뜻은 ",
+    h("button", { class: "btn-reset linkish", type: "button", onclick: () => { const d = $("#trace-opts"); d.open = true; d.querySelector("summary").focus(); } }, "보기 옵션"),
+    "에 있어요") : null);
 
   const tree = h("ul", { class: "tree" }, traceNode(data.tree, 0, ctx));
   ctx.treeEl = tree;
@@ -1979,11 +2024,8 @@ function traceNode(n, depth, ctx) {
     body.push(h("span", { class: `verb${WRITE_VERBS.has(verb) ? " w" : ""}` }, verb), h("span", { class: "name" }, wbr(id)));
     if (est) body.push(h("span", { class: "dashed-tag", title: TERM.estimated }, `추정 연결${n.note ? ` · ${n.note}` : ""}`));
     const ts = tablesOf(n);
-    if (ts.length) {
-      body.push(h("span", { class: "tables" }, ts.map((t) => h("span", {
-        class: `chip mono ${WRITE_VERBS.has(verb) ? "solid" : est ? "dashed" : "ctl"}`,
-      }, t))));
-    }
+    // 테이블 이름은 위 요약 칩·오른쪽 표에도 있으니 트리 안에서는 작은 글자 한 줄로만 (칩 상자 없이)
+    if (ts.length) body.push(h("span", { class: `tables tables-sm${WRITE_VERBS.has(verb) ? " w" : ""}` }, `테이블: ${ts.join(", ")}`));
   } else if (n.kind === "view") {
     lead.push(icon("app-window", "i14"));
     body.push(h("span", { class: "name" }, wbr(n.label)));
@@ -2054,18 +2096,29 @@ views.ask = async function (params) {
     setKids(box, ...(picks.length ? [h("span", { class: "muted" }, "인수인계 질문에서 골라 묻기:")] : []),
       ...picks.map((q) => h("button", {
         type: "button", title: `대상: ${q.target}`,
-        onclick: () => { $("#ask-q").value = q.question; $("#ask-target").value = q.target; $("#ask-form").requestSubmit(); },
+        onclick: () => { $("#ask-q").value = q.question; setAskTarget(q.target); $("#ask-form").requestSubmit(); },
       }, `${q.question.slice(0, 30)}${q.question.length > 30 ? "…" : ""}`)));
   } catch { setKids(box, ); }
   if (!params || !params.q) $("#ask-q").focus();
 };
+
+// '대상 코드'는 [고급] 안에 접혀 있다. 대상이 채워지면 펼쳐서 무엇을 기준으로 묻는지 보이게 한다
+function setAskTarget(value) {
+  $("#ask-target").value = value || "";
+  if (value) $("#ask-adv").open = true;
+  paintAskAdv();
+}
+function paintAskAdv() {
+  const t = $("#ask-target").value.trim();
+  $("#ask-adv-sum").textContent = t ? ` · 대상: ${t}` : "";
+}
 
 function renderRecentAsks() {
   const list = recentList("sasu-recent-ask");
   const box = $("#ask-recent");
   box.classList.toggle("hidden", !list.length);
   setKids(box, "최근:", ...list.map((r) => h("button", { class: "chip", type: "button", title: r.target ? `대상: ${r.target}` : null,
-    onclick: () => { $("#ask-q").value = r.question; $("#ask-target").value = r.target || ""; $("#ask-q").focus(); } },
+    onclick: () => { $("#ask-q").value = r.question; setAskTarget(r.target || ""); $("#ask-q").focus(); } },
   `${r.question.slice(0, 16)}${r.question.length > 16 ? "…" : ""}`)));
 }
 
@@ -2076,10 +2129,11 @@ $("#ask-q").addEventListener("input", () => {
   if (t.dataset.used === "1" && t.value) {
     t.value = "";
     t.dataset.used = "";
+    paintAskAdv();
     toast("새 질문이라 앞 질문의 대상 코드를 비웠어요.");
   }
 });
-$("#ask-target").addEventListener("input", () => { $("#ask-target").dataset.used = ""; });
+$("#ask-target").addEventListener("input", () => { $("#ask-target").dataset.used = ""; paintAskAdv(); });
 $("#ask-form").addEventListener("submit", () => { $("#ask-target").dataset.used = "1"; });
 $("#ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -2133,7 +2187,8 @@ async function runAsk(req, candidates) {
   if (auto) {
     setKids(out, confirmCard(req, ev, cands, () => { const r = ++askRun; answerPhase(r, req, body, ev, cands); }));
     done();
-    announce("이 코드에 대해 물을지 확인해 주세요");
+    // 확인 단계가 떴다는 것을 알린다 (Ctrl+Enter 뒤 답을 기다리던 문제, 시험 N06). 포커스는 카드 제목으로
+    announce("답하기 전에 대상 코드를 확인해 주세요");
     focusResultHead(out.querySelector(".confirm-head"));
     return;
   }
@@ -2157,31 +2212,47 @@ function confirmCard(req, ev, cands, go) {
   // C1: 1위 후보가 질문과 약하게만 맞으면 경고를 크게, [이 코드로 묻기]는 보조 버튼으로
   const weak = ev.low_confidence === true;
   const terms = Array.isArray(ev.expanded_terms) ? ev.expanded_terms.filter((x) => typeof x === "string" && x.trim()) : [];
-  const withWhy = others.some((c) => whyOf(c));
+  // 짧게: 대상 + 다른 후보 3개(고른 이유 한 줄씩) + [이 코드로 묻기]/[화면(URL)으로 찾기].
+  // 넓혀 찾은 말·대상을 고른 이유·나머지 후보는 "자세히" 안에
+  const SHOWN = 3;
+  const candBtn = (c) => h("button", { type: "button", title: `${c.path}:${c.line}`,
+    onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands) },
+  candLabel(c), whyOf(c) ? h("span", { class: "cwhy" }, whyOf(c)) : null);
+  const picker = urlPicker(req);
+  if (!weak) picker.classList.add("hidden");
+  const pickBtn = h("button", { class: "btn", type: "button", "aria-expanded": String(weak), onclick: (e) => {
+    const hidden = picker.classList.toggle("hidden");
+    e.currentTarget.setAttribute("aria-expanded", String(!hidden));
+    if (!hidden) picker.querySelector("input").focus();
+  } }, icon("app-window"), "화면(URL)으로 찾기");
+  const rest = others.slice(SHOWN);
+  const more = terms.length || tWhy || rest.length;
   return h("div", { class: "card confirm-card" },
     h("h3", { class: "confirm-head", tabindex: "-1" }, icon("search", "i20"), "이 코드에 대해 물을까요?"),
     weak ? h("div", { class: "notice warn big", role: "note" }, icon("triangle-alert"), h("div", {},
       h("b", {}, "질문과 딱 맞는 코드를 못 찾았어요 — 아래 후보나 화면(URL)으로 직접 골라 주세요"),
       h("div", { class: "small" }, "아래 코드는 질문 낱말과 조금만 맞아요. 그대로 물으면 질문과 다른 코드를 기준으로 답할 수 있어요."))) : null,
-    h("p", { class: "muted small" }, "질문 낱말로 사수가 고른 코드예요. 답은 질문 전체가 아니라 이 코드를 기준으로 만들어요."),
-    terms.length ? h("p", { class: "expanded-terms" }, "이렇게 넓혀 찾았어요: ",
-      h("span", { class: "mono" }, terms.slice(0, 12).join(", ")), terms.length > 12 ? ` 외 ${terms.length - 12}개` : null) : null,
+    h("p", { class: "muted small" }, "답은 질문 전체가 아니라 이 코드 한 곳을 기준으로 만들어요."),
     h("div", { class: "confirm-target" },
       ko ? h("div", { class: "ko-big" }, ko) : h("div", { class: "muted xs" }, "한글 설명 없음"),
       h("div", { class: "mono" }, t.label),
-      tWhy ? h("span", { class: "cwhy" }, `고른 이유: ${tWhy}`) : null,
       locLink(`${t.path}:${t.line_start}-${t.line_end}`, `${t.path}:${t.line_start}`, `코드 보기: ${t.path}:${t.line_start}`)),
     h("div", { class: "row" },
-      h("button", { class: weak ? "btn" : "btn primary lg", type: "button", onclick: go }, icon("message-square-quote"),
-        "이 코드로 묻기")),
-    others.length ? h("div", { class: `candidates${withWhy ? " with-why" : ""}` }, h("span", { class: "muted" }, "다른 후보:"),
-      others.map((c) => h("button", { type: "button", title: [`${c.path}:${c.line}`, whyOf(c)].filter(Boolean).join("\n"),
-        onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands) },
-      candLabel(c), whyOf(c) ? h("span", { class: "cwhy" }, whyOf(c)) : null))) : null,
-    urlPicker(req),
-    h("p", { class: "muted xs", style: "margin:4px 0 0" }, "다른 코드면 후보에서 고르거나, 화면(URL)으로 찾거나, ",
-      h("button", { class: "btn-reset linkish", type: "button", onclick: () => $("#ask-target").focus() }, "'대상 코드' 칸"),
-      "에 넣으세요."));
+      h("button", { class: weak ? "btn" : "btn primary lg", type: "button", onclick: go }, icon("message-square-quote"), "이 코드로 묻기"),
+      pickBtn),
+    picker,
+    others.length ? h("div", { class: "candidates with-why" }, h("span", { class: "muted" }, "다른 후보:"), others.slice(0, SHOWN).map(candBtn)) : null,
+    more ? h("details", { class: "fold-sm confirm-more" },
+      h("summary", {}, icon("chevron-right", "i14 chev"), "자세히",
+        rest.length ? h("span", { class: "muted xs" }, ` · 다른 후보 ${rest.length}개 더`) : null),
+      h("div", { class: "fold-body" },
+        tWhy ? h("p", { class: "expanded-terms" }, `이 코드를 고른 이유: ${tWhy}`) : null,
+        terms.length ? h("p", { class: "expanded-terms" }, "이렇게 넓혀 찾았어요: ",
+          h("span", { class: "mono" }, terms.slice(0, 12).join(", ")), terms.length > 12 ? ` 외 ${terms.length - 12}개` : null) : null,
+        rest.length ? h("div", { class: "candidates with-why" }, rest.map(candBtn)) : null,
+        h("p", { class: "muted xs", style: "margin:0" }, "후보에 없으면 ",
+          h("button", { class: "btn-reset linkish", type: "button", onclick: () => { $("#ask-adv").open = true; $("#ask-target").focus(); } }, "'대상 코드' 칸"),
+          "에 Class.method나 URL을 넣으세요."))) : null);
 }
 
 // 확인 카드의 "화면(URL)으로 찾기": URL 일부나 한글 업무명으로 화면을 고르면 그 URL을 대상으로 바로 묻는다
@@ -2268,16 +2339,23 @@ async function answerPhase(run, req, body, ev, cands) {
   const evidenceCol = h("div", { class: "evidence-col" },
     h("h3", { style: "margin-top:0" }, `근거 ${ev.evidence.length}개`),
     h("div", { class: "evidence" }, ev.evidence.map(evidenceCard)));
+  // 답 위는 한 줄: "이 답은 코드 한 곳(…)만 보고 만들었어요" + [다른 코드로 다시 묻기] (후보 칩 줄·대상 띠를 접었다)
+  const again = () => {
+    if (cands && cands.length) {
+      setKids(out, confirmCard(req, ev, cands, () => { const r = ++askRun; answerPhase(r, req, body, ev, cands); }));
+      announce("다른 코드를 고르세요");
+      focusResultHead(out.querySelector(".confirm-head"));
+    } else {
+      $("#ask-adv").open = true;
+      $("#ask-target").focus();
+      toast("'대상 코드' 칸에 Class.method나 URL을 넣고 다시 물어보세요.");
+    }
+  };
   setKids(out,
-    cands && cands.length ? h("div", { class: "candidates" }, h("span", { class: "muted" }, "찾은 코드 (다른 코드면 고르세요):"),
-      cands.map((c) => h("button", {
-        type: "button", "aria-pressed": String(c.method_id === t.method_id), title: [`${c.path}:${c.line}`, whyOf(c)].filter(Boolean).join("\n"),
-        onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands),
-      }, candLabel(c)))) : null,
     h("div", { class: "target-line" }, icon("info", "i14"),
-      h("span", {}, "대상: ", h("b", {}, ko || t.label), ko ? h("span", { class: "mono" }, ` (${t.label})`) : null,
-        "에 대한 답이에요 — 질문 전체가 아니라 이 코드 기준"),
-      locLink(`${t.path}:${t.line_start}-${t.line_end}`, `${fileName(t.path)}:${t.line_start}`)),
+      h("b", { class: "grow" }, `이 답은 코드 한 곳(${ko ? `${ko} · ` : ""}${t.label})만 보고 만들었어요`),
+      locLink(`${t.path}:${t.line_start}-${t.line_end}`, `${fileName(t.path)}:${t.line_start}`),
+      h("button", { class: "btn sm", type: "button", onclick: again }, icon("refresh-cw", "i14"), "다른 코드로 다시 묻기")),
     h("div", { class: "ask-grid" }, answerBox, evidenceCol),
   );
   try {
@@ -2326,10 +2404,20 @@ function renderAnswer(ans, ev) {
       h("details", {}, h("summary", {}, "자세히"), ans.error)))];
   }
   const levels = new Map(ev.evidence.map((e) => [e.id, e.level]));
+  // 답 머리 바로 아래 등급별 개수 한 줄 ("사실 3 · 추정 1 · 모름 1"). 첫 문장을 요약처럼 키우지 않는다(사실처럼 보일 위험)
+  const tally = ["사실", "답변", "추정", "모름"].map((k) => [k, ans.sentences.filter((s) => s.label === k).length]).filter(([, n]) => n);
+  const nAsk = ans.sentences.filter((s) => s.label === "질문").length;
+  const counts = tally.length || nAsk ? h("div", { class: "grade-tally", "aria-label": "문장 등급별 개수" },
+    tally.flatMap(([k, n], i) => [i ? h("span", { class: "muted", "aria-hidden": "true" }, "·") : null, gradeChip(k), h("b", {}, String(n))]),
+    nAsk ? [tally.length ? h("span", { class: "muted", "aria-hidden": "true" }, "·") : null, h("span", { class: "muted" }, `전임자에게 물을 것 ${nAsk}`)] : null) : null;
   // 비용은 화면에 보이지 않는다. 모델 이름만 머리 title로
   const parts = [
-    h("div", { class: "row" }, h("span", { class: "answer-head grow", title: ans.model ? `모델: ${ans.model}` : null }, "사수의 답")),
+    h("div", { class: "row" }, h("span", { class: "answer-head", title: ans.model ? `모델: ${ans.model}` : null }, "사수의 답"), counts),
     h("div", { class: "muted" }, "근거로 만든 답이에요. 추정·모름은 전임자에게 확인하세요."),
+    // 등급 범례는 이 화면, 답 위에만: 칩 한 줄, 누르면 뜻
+    h("details", { class: "legend-levels" },
+      h("summary", {}, ["사실", "답변", "추정", "모름", "질문"].map((k) => gradeChip(k)), h("span", { class: "muted" }, "등급 뜻")),
+      ["사실", "답변", "추정", "모름", "질문"].map((k) => h("div", {}, gradeChip(k), GRADE[k].desc))),
   ];
   const asks = ans.sentences.filter((s) => s.label === "질문");
   const used = new Map();
@@ -2349,24 +2437,23 @@ function renderAnswer(ans, ev) {
     });
     const text = h("div", { class: "grow" }, s.text, " ", cites,
       down ? h("div", { class: "why-down" }, `낮춘 이유: ${down.reason}`) : null);
-    if (s.label === "모름") {
-      const next = asks.length ? asks[0].text : s.text;
+    // '물어볼 질문'은 아래 "전임자에게 물을 것" 상자에 한 번만. 질문 문장이 따로 없을 때만 모름 아래에 둔다
+    if (s.label === "모름" && !asks.length) {
       text.append(h("div", { class: "ask-next" },
-        h("div", { class: "small" }, gradeChip("질문"), " ", next),
         h("div", { class: "row" },
-          h("button", { class: "btn sm", type: "button", onclick: () => copy(next, "질문을 복사했어요") }, icon("copy", "i14"), "이 질문 복사"),
-          h("button", { class: "btn sm", type: "button", onclick: () => askDraft(next, ev.target) }, icon("mail", "i14"), "메시지 만들기"))));
+          h("button", { class: "btn sm", type: "button", onclick: () => copy(s.text, "질문을 복사했어요") }, icon("copy", "i14"), "이 내용으로 질문 복사"),
+          h("button", { class: "btn sm", type: "button", onclick: () => askDraft(s.text, ev.target) }, icon("mail", "i14"), "메시지 만들기"))));
     }
     parts.push(h("div", { class: `sentence ${g.cls}` }, grades, text));
   }
   if (asks.length) {
     parts.push(h("div", { class: "ask-box-q" }, h("b", { class: "small" }, "전임자에게 물을 것"),
       asks.map((s) => h("div", { class: "row" }, h("span", { class: "grow" }, s.text),
-        h("button", { class: "btn sm", type: "button", onclick: () => copy(s.text, "질문을 복사했어요") }, icon("copy", "i14"), "이 질문 복사")))));
+        h("button", { class: "btn sm", type: "button", onclick: () => copy(s.text, "질문을 복사했어요") }, icon("copy", "i14"), "이 질문 복사"),
+        h("button", { class: "btn sm", type: "button", onclick: () => askDraft(s.text, ev.target) }, icon("mail", "i14"), "메시지 만들기")))));
   }
   const issues = (ans.issues || []).filter((x) => !x.startsWith("추정으로 낮춤"));
   if (issues.length) parts.push(h("div", { class: "issues" }, issues.map((x) => h("div", {}, icon("triangle-alert", "i12"), ` ${x}`))));
-  parts.push(h("div", { class: "legend-levels" }, ["사실", "답변", "추정", "모름", "질문"].map((k) => h("div", {}, gradeChip(k), GRADE[k].desc))));
   // 근거 카드에 역링크 "문장 1·3에서 씀"
   for (const e of ev.evidence) {
     const back = document.querySelector(`#ev-${e.id} .back`);
@@ -2433,32 +2520,133 @@ function whereCell(location, skip) {
     dir ? h("span", { class: "dir" }, wbr(dir)) : null);
 }
 
-// 모듈(기능)별 기존 동작 목록 받기
+// 기존 동작 목록 받기: "기능 찾기"에서 업무명(휴가관리)이나 모듈(uss.ion)을 고르면 그것만, 비우면 전체.
+// 모듈 업무명은 "당직관리 외 27"처럼 대표 하나만 보여서, 업무명마다 따로 후보를 둔다 (overview.businesses)
+const asis = { cands: [], pick: null, total: null, idx: -1, shown: [] };
+
 async function fillAsisModules() {
-  const sel = $("#asis-module");
   try {
     const ov = await getOverview();
-    const mods = ov.modules.slice().sort((a, b) => a.name.localeCompare(b.name));
-    setKids(sel, h("option", { value: "" }, `모듈을 고르세요 (${fmt(mods.length)}개)`),
-      ...mods.map((m) => h("option", { value: m.name }, `${moduleOptionText(m)} · URL ${fmt(m.urls)}`)));
+    asis.total = ov.counts.URL;
+    const biz = Array.isArray(ov.businesses) ? ov.businesses
+      // 예전 서버: 모듈의 업무명 목록만 있다 (URL 수 모름)
+      : ov.modules.flatMap((m) => (m.labels || []).map((l) => ({ label: l, module: m.name, urls: null })));
+    asis.cands = [
+      ...biz.map((b) => ({ kind: "business", label: b.label, module: b.module, urls: b.urls,
+        key: `${b.label} ${b.module}`.toLowerCase() })),
+      ...ov.modules.slice().sort((a, b) => a.name.localeCompare(b.name)).map((m) => ({ kind: "module", label: m.label || "", module: m.name, urls: m.urls,
+        key: `${m.name} ${(m.labels || []).join(" ")}`.toLowerCase() })),
+    ];
   } catch {
-    setKids(sel, h("option", { value: "" }, "모듈 목록을 불러오지 못했어요"));
+    asis.cands = [];
   }
   paintAsis();
 }
-function paintAsis() {
-  const m = $("#asis-module").value;
-  const go = $("#asis-module-go");
-  go.href = m ? `/api/behaviors/export?module=${encodeURIComponent(m)}` : "/api/behaviors/export";
-  go.setAttribute("aria-disabled", String(!m));
+
+const asisText = (c) => (c.kind === "business" ? c.label : c.module);
+function asisMatches(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return asis.cands.filter((c) => c.kind === "business");
+  const hit = asis.cands.filter((c) => words.every((w) => c.key.includes(w)));
+  // 업무명이 그 말로 시작하는 것 → 업무명 → 모듈 순
+  const starts = (c) => (c.kind === "business" && c.label.toLowerCase().startsWith(words[0]) ? 0 : c.kind === "business" ? 1 : 2);
+  return hit.sort((a, b) => starts(a) - starts(b));
 }
-$("#asis-module").addEventListener("change", paintAsis);
-$("#asis-module-go").addEventListener("click", (e) => {
-  if (e.currentTarget.getAttribute("aria-disabled") === "true") {
-    e.preventDefault();
-    toast("모듈을 먼저 고르세요");
-    $("#asis-module").focus();
+
+function hideAsisSuggest() {
+  $("#asis-suggest").classList.add("hidden");
+  $("#asis-q").setAttribute("aria-expanded", "false");
+  $("#asis-q").removeAttribute("aria-activedescendant");
+  asis.idx = -1;
+}
+
+function showAsisSuggest() {
+  const q = $("#asis-q").value.trim();
+  const list = asisMatches(q);
+  asis.shown = list.slice(0, 40);
+  asis.idx = -1;
+  const box = $("#asis-suggest");
+  if (!asis.cands.length) { hideAsisSuggest(); return; }
+  if (!list.length) {
+    setKids(box, h("li", { class: "more", role: "presentation" }, `${noMatch(q, "기능이")}. 업무명 일부(예: 휴가)나 모듈(예: uss.ion)로 찾아 보세요.`));
+  } else {
+    setKids(box, ...asis.shown.map((c, i) => h("li", { id: `asis-sug-${i}`, role: "option", "aria-selected": "false",
+      onmousedown: (e) => e.preventDefault(), onclick: () => pickAsis(c) },
+    h("span", { class: "sug-url" }, c.kind === "business" ? h("b", { class: "sug-biz" }, c.label) : c.module),
+    h("span", { class: "sug-ko" }, [c.kind === "business" ? c.module : (c.label ? `모듈 · ${c.label}` : "모듈"),
+      c.urls !== null && c.urls !== undefined ? `URL ${fmt(c.urls)}개` : null].filter(Boolean).join(" · ")))),
+    list.length > asis.shown.length ? h("li", { class: "more", role: "presentation" }, `… ${fmt(list.length - asis.shown.length)}개 더 (더 입력해 좁히세요)`) : null);
   }
+  box.classList.remove("hidden");
+  $("#asis-q").setAttribute("aria-expanded", "true");
+}
+
+function pickAsis(c) {
+  asis.pick = c;
+  $("#asis-q").value = c ? asisText(c) : "";
+  hideAsisSuggest();
+  paintAsis();
+  if (c) announce(`${asisText(c)} 골랐어요. ${$("#asis-go-text").textContent}`);
+}
+
+function paintAsis() {
+  const c = asis.pick;
+  const go = $("#asis-go");
+  const params = c ? (c.kind === "business" ? { business: c.label, module: c.module } : { module: c.module }) : null;
+  go.href = params ? `/api/behaviors/export?${new URLSearchParams(params)}` : "/api/behaviors/export";
+  const n = c ? c.urls : asis.total;
+  const rows = n !== null && n !== undefined ? ` (${fmt(n)}행)` : "";
+  $("#asis-go-text").textContent = c
+    ? `${c.kind === "business" ? "이 기능" : "이 모듈"} 기존 동작 목록 받기${rows}`
+    : `기존 동작 목록 받기 · 전체${rows}`;
+  go.title = c ? `${c.kind === "business" ? `${c.label} (${c.module})` : `${c.module} 모듈`}의 기존 동작 목록(AS-IS) 엑셀` : "모든 기능의 기존 동작 목록(AS-IS) 엑셀";
+  setKids($("#asis-pick"), c
+    ? [`고른 것: ${c.kind === "business" ? `${c.label} · ${c.module}` : `${c.module} 모듈 전체${c.label ? ` (${c.label})` : ""}`} · `,
+      h("button", { class: "btn-reset linkish", type: "button", onclick: () => { pickAsis(null); $("#asis-q").focus(); } }, "전체로 되돌리기")]
+    : "비워 두면 모든 기능(URL)을 받아요.");
+}
+
+$("#asis-q").addEventListener("input", () => {
+  // 고른 뒤 글자를 고치면 고른 것을 푼다 (비우면 전체)
+  if (asis.pick && $("#asis-q").value.trim() !== asisText(asis.pick)) { asis.pick = null; paintAsis(); }
+  showAsisSuggest();
+});
+$("#asis-q").addEventListener("click", () => { if (!asis.pick) showAsisSuggest(); });
+$("#asis-q").addEventListener("blur", () => setTimeout(hideAsisSuggest, 150));
+$("#asis-q").addEventListener("keydown", (e) => {
+  const open = !$("#asis-suggest").classList.contains("hidden") && asis.shown.length;
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault();
+    if (!open) { showAsisSuggest(); return; }
+    asis.idx = Math.max(0, Math.min(asis.shown.length - 1, asis.idx + (e.key === "ArrowDown" ? 1 : -1)));
+    document.querySelectorAll("#asis-suggest li[role=option]").forEach((li, i) => li.setAttribute("aria-selected", String(i === asis.idx)));
+    const cur = document.getElementById(`asis-sug-${asis.idx}`);
+    if (cur) { $("#asis-q").setAttribute("aria-activedescendant", cur.id); cur.scrollIntoView({ block: "nearest" }); }
+  } else if (e.key === "Escape") {
+    if (!$("#asis-suggest").classList.contains("hidden")) { e.preventDefault(); hideAsisSuggest(); }
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (open && asis.idx >= 0) pickAsis(asis.shown[asis.idx]);
+    else if (!$("#asis-q").value.trim()) pickAsis(null);
+    else {
+      const list = asisMatches($("#asis-q").value.trim());
+      if (list.length) pickAsis(list[0]);
+      else showAsisSuggest();
+    }
+  }
+});
+// 글자만 적고 고르지 않은 채 누르면: 맞는 것이 하나면 그것, 아니면 목록에서 고르게 한다
+$("#asis-go").addEventListener("click", (e) => {
+  const q = $("#asis-q").value.trim();
+  if (asis.pick || !q) return;
+  const list = asisMatches(q);
+  const exact = list.filter((c) => asisText(c).toLowerCase() === q.toLowerCase());
+  const one = exact.length === 1 ? exact[0] : list.length === 1 ? list[0] : null;
+  if (one) { pickAsis(one); return; }  // href가 바뀐 뒤 그대로 내려받는다
+  e.preventDefault();
+  $("#asis-q").focus();
+  showAsisSuggest();
+  toast(list.length ? "목록에서 기능을 하나 고르세요" : noMatch(q, "기능이"));
 });
 
 views.cleanup = async function () {
@@ -2467,6 +2655,7 @@ views.cleanup = async function () {
   const common = $("#cleanup-common");
   const tiles = $("#cleanup-tiles");
   setKids(unused, loading("부르는 곳을 못 찾은 코드를 찾는 중…"));
+  $("#cleanup-sum").textContent = "개수를 세는 중…";
   setKids(common, );
   setKids(tiles, );
   let u;
@@ -2475,11 +2664,14 @@ views.cleanup = async function () {
     [u, c] = await Promise.all([getUnused(), api("/api/common")]);
   } catch (err) {
     setKids(unused, errorBox(err, () => { loaded.delete("cleanup"); views.cleanup(); }));
+    $("#cleanup-sum").textContent = "불러오지 못했어요";
+    $("#cleanup-more").open = true;
     return;
   }
   const openSection = (id) => {
     const d = document.getElementById(id);
     if (!d) return;
+    $("#cleanup-more").open = true;
     d.open = true;
     d.scrollIntoView({ block: "start" });
     d.querySelector("summary").focus({ preventScroll: true });
@@ -2492,6 +2684,15 @@ views.cleanup = async function () {
   T.push(tile("sec-clones", "복사한 코드", c.clone_stats.groups, "묶음"));
   T.push(tile("sec-dupsql", "같은 SQL", c.duplicate_sql.length, "묶음"));
   setKids(tiles, ...T);
+  // 접힌 머리: "후보 n개 · 실행 오류 위험 n"만. 종류별 숫자는 펼친 타일에
+  // 실행 오류 위험 = 없는 SQL 호출 중 URL에서 이어지는 것 ("죽은 코드"가 아닌 것)
+  const brokenSec = u.sections.find((s) => s.kind === "broken_sql");
+  const nRisk = brokenSec ? brokenSec.items.filter((f) => !/죽은 코드/.test(f.reason || "")).length : 0;
+  const nAll = u.sections.reduce((n, s) => n + s.items.length, 0) + c.clone_stats.groups + c.duplicate_sql.length;
+  setKids($("#cleanup-sum"),
+    h("span", { class: "muted" }, `후보 ${fmt(nAll)}개`),
+    nRisk ? [h("span", { class: "muted" }, " · "),
+      h("span", { class: "risk", title: "없는 SQL 호출 중 URL에서 이어져 실행하면 오류가 나는 곳" }, icon("triangle-alert", "i12"), `실행 오류 위험 ${fmt(nRisk)}`)] : null);
 
   setKids(unused, ...u.sections.map((s) => {
     const broken = s.kind === "broken_sql";
