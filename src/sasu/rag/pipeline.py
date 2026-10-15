@@ -99,13 +99,14 @@ def search_question(conn: sqlite3.Connection, question: str, top: int = 6, pool:
     index = index or MethodIndex(conn, embedder_or_none())
     how = "BM25 + 벡터 하이브리드" if index.has_vectors else "BM25 (벡터 색인 없음: sasu embed)"
     extra = expander.expand(conn, question) if expander is not None else []
+    weights = getattr(expander, "last_weights", None) if extra else None  # 넓히기 변형 union2의 말별 가중치
     if extra:
         how += " + LLM 질문 넓히기"
     glossary = index.expand(question)  # 필드 주석 용어 사전으로 넓힌 말 (why에 보여 주려고)
     names = Labels(conn)
     result: list[Candidate] = []
     per: Counter = Counter()
-    for hit in index.search(question, top=max(pool, top), extra_terms=extra):
+    for hit in index.search(question, top=max(pool, top), extra_terms=extra, extra_weights=weights):
         class_id = names.class_of(hit.method_id)
         if per[class_id] >= per_class:
             continue

@@ -180,14 +180,23 @@ class MethodIndex:
         return self.embedder is not None and has_vector_index(self.conn) == self.embedder.name
 
     def bm25(self, query: str, expand: bool = True, k1: float = 1.2, b: float = 0.75,
-             extra_terms: list[str] | None = None) -> dict[int, float]:
-        """extra_terms: LLM이 넓힌 말. 질문에 없는 토큰만 낮은 가중치로 더한다."""
+             extra_terms: list[str] | None = None, extra_weights: dict[str, float] | None = None) -> dict[int, float]:
+        """extra_terms: LLM이 넓힌 말. 질문에 없는 토큰만 낮은 가중치로 더한다.
+        extra_weights: 말별 가중치 (넓히기 변형 union2. 없는 말·None이면 _EXTRA_WEIGHT, 같은 토큰은 큰 값)."""
         terms = Counter(tokenize(query))
         for t in self.expand(query) if expand else []:
             terms[t] += 0.5
-        for t in dict.fromkeys(tokenize(" ".join(extra_terms or []))):
-            if t not in terms:
-                terms[t] = _EXTRA_WEIGHT
+        if extra_weights is None:
+            for t in dict.fromkeys(tokenize(" ".join(extra_terms or []))):
+                if t not in terms:
+                    terms[t] = _EXTRA_WEIGHT
+        else:
+            base = set(terms)
+            for term in extra_terms or []:
+                weight = extra_weights.get(term, _EXTRA_WEIGHT)
+                for t in tokenize(term):
+                    if t not in base:
+                        terms[t] = max(terms.get(t, 0.0), weight)
         scores: dict[int, float] = {}
         for mid, tf in self.tf.items():
             score = 0.0
@@ -209,20 +218,21 @@ class MethodIndex:
         return {mid: 1.0 - dist for mid, dist in vector_search(self.conn, query_vector, top) if mid in self.labels}
 
     def search(self, query: str, top: int = 5, expand: bool = True, graph: bool = True,
-               mode: str = "auto", extra_terms: list[str] | None = None) -> list[Hit]:
+               mode: str = "auto", extra_terms: list[str] | None = None,
+               extra_weights: dict[str, float] | None = None) -> list[Hit]:
         """mode: bm25, vector, hybrid(선형 결합), rrf(비교용), auto(벡터 색인이 있으면 hybrid).
         expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교).
         extra_terms=LLM이 넓힌 말 (BM25에만 낮은 가중치로 더한다. 벡터는 원래 질문으로)."""
         if mode == "auto":
             mode = "hybrid" if self.has_vectors else "bm25"
         if mode == "bm25":
-            scores = self.bm25(query, expand, extra_terms=extra_terms)
+            scores = self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights)
         elif mode == "vector":
             scores = self.vector(query)
         elif mode == "rrf":  # 비교용: 순위만 합치면 BM25의 확신 있는 1순위가 희석된다
-            scores = _rrf([self.bm25(query, expand, extra_terms=extra_terms), self.vector(query)])
+            scores = _rrf([self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights), self.vector(query)])
         else:
-            scores = _linear(self.bm25(query, expand, extra_terms=extra_terms), self.vector(query), _VECTOR_WEIGHT)
+            scores = _linear(self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights), self.vector(query), _VECTOR_WEIGHT)
         scores = self._answer_boost(query, scores)
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)

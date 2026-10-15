@@ -543,55 +543,126 @@ def eval_search(
 def eval_everyday(
     set_path: Path = typer.Option(None, "--set", help="평가 세트 JSON (기본: 내장 everyday.json, eGovFrame 공통컴포넌트)"),
     db_path: Path = typer.Option(None, "--db", help="분석 파일 (기본: 세트의 project 이름으로 찾음)"),
+    split: str = typer.Option("all", "--split", help="dev | test | all (all이면 split별로 따로 보고)"),
+    runs: int = typer.Option(1, "--runs", min=1, help="넓히기를 캐시 없이 N번 다시 재서 흔들림을 본다"),
+    expand_variant: str = typer.Option(None, "--expand-variant",
+                                       help="넓히기 변형 default | strict | union2 (쉼표로 여럿, 기본 SASU_EXPAND_VARIANT)"),
     no_llm: bool = typer.Option(False, "--no-llm", help="LLM 넓히기 없이 (a)만"),
-    no_cache: bool = typer.Option(False, "--no-cache", help="넓히기 캐시를 쓰지 않고 LLM을 다시 불러 지연을 잰다"),
-    out: Path = typer.Option(None, "--out", help="질문별 결과 JSON"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="넓히기 캐시를 읽지도 쓰지도 않고 LLM을 다시 불러 지연을 잰다"),
+    out: Path = typer.Option(None, "--out", help="요약 + 질문별·실행별 원자료 JSON"),
 ) -> None:
-    """일상어 질문으로 묻기 대상 후보를 잰다: 상위 6 정답률, 일반 질문 low_confidence 정확도, 지연.
-    (a) 지금 검색 (b) + LLM 질문 넓히기. 분석 파일은 읽기 전용으로 연다."""
+    """일상어 질문으로 묻기 대상 후보를 잰다: 상위 6·1위 정답률(95% Wilson 구간), 질문별 안정성,
+    (a) 대비 짝 비교, 일반 질문 low_confidence 정확도, 지연. (a) 지금 검색 (b) + LLM 질문 넓히기(변형별).
+    --runs·--no-cache면 넓히기 캐시를 읽지도 쓰지도 않는다. 분석 파일은 읽기 전용으로 연다."""
     import json
 
-    from sasu.evaluation.everyday_eval import load_set, run_variant, to_json
-    from sasu.rag.expand import QueryExpander, make_expand_client
+    from rich.markup import escape
+
+    from sasu.evaluation.everyday_eval import SPLITS, load_set, report, run_variant, select, split_of, to_json
+    from sasu.rag.expand import VARIANTS, QueryExpander, make_expand_client
+    from sasu.rag.expand import variant as default_variant
     from sasu.rag.pipeline import embedder_or_none
     from sasu.rag.search import MethodIndex
 
     data = load_set(set_path)
+    try:
+        questions = select(data["questions"], split)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    names = [v.strip().lower() for v in (expand_variant or default_variant()).split(",") if v.strip()]
+    if not names or any(v not in VARIANTS for v in names):
+        console.print(f"[red]--expand-variant는 {', '.join(VARIANTS)} 중에서 (쉼표로 여럿): {expand_variant}[/red]")
+        raise typer.Exit(1)
+    if not questions:
+        console.print(f"[red]{split} 질문이 없어요.[/red]")
+        raise typer.Exit(1)
     path = db_path or project_db(data["project"])
     if not path.exists():
         console.print(f"[red]분석 파일이 없어요: {path} (먼저 sasu index)[/red]")
         raise typer.Exit(1)
     conn = db.connect_readonly(path)
     index = MethodIndex(conn, embedder_or_none())
-    questions = data["questions"]
-    variants = [run_variant(conn, "(a) 지금 검색", questions, index, None)]
+    base = "(a) 지금 검색"
+    groups = {base: [run_variant(conn, base, questions, index, None)]}
+    use_cache = not no_cache and runs == 1
     if not no_llm:
-        expander = QueryExpander(make_expand_client(load_settings()), use_cache=not no_cache)
-        if not expander.available:
-            console.print("[yellow]LLM이 없어 (b)는 건너뜁니다 (SASU_LLM_PROVIDER).[/yellow]")
-        else:
-            with console.status("LLM으로 질문을 넓혀 검색하는 중…"):
-                variants.append(run_variant(conn, "(b) + LLM 질문 넓히기", questions, index, expander))
-    n_spec = sum(1 for q in questions if q.get("gold"))
-    console.print(f"질문 {len(questions)}개 (정답 있는 {n_spec} · 일반 개념 {len(questions) - n_spec}) · "
-                  f"{'벡터 하이브리드' if index.has_vectors else 'BM25'}")
-    table = Table(title="일상어 질문 검색", title_justify="left")
-    for col in ("검색", "상위 6 정답률", "1위 정답률", "일반 질문 low_conf 정확도", "정답 있는 질문을 low_conf로",
-                "평균 지연(초)", "넓히기 LLM(초)"):
-        table.add_column(col, justify="left" if col == "검색" else "right")
-    for v in variants:
-        table.add_row(v.name, f"{v.hit_rate:.0%}", f"{v.top1_rate:.0%}", f"{v.low_conf_accuracy:.0%}",
-                      f"{v.false_low_conf:.0%}", f"{v.avg_seconds:.2f}", f"{v.avg_expand_seconds:.2f}")
-    console.print(table)
-    last = variants[-1]
-    for c in last.cases:
-        mark = f"{c.rank}위" if c.rank else ("low_conf" if not c.gold and c.low_confidence else "놓침")
-        terms = f" [dim]넓힘: {', '.join(c.expanded_terms)}[/dim]" if c.expanded_terms else ""
-        console.print(f"• {c.id} {c.question} → {mark}{' (low_conf)' if c.low_confidence and c.gold else ''}{terms}")
+        settings = load_settings()
+        for name in names:
+            expander = QueryExpander(make_expand_client(settings), use_cache=use_cache, variant_name=name)
+            if not expander.available:
+                console.print("[yellow]LLM이 없어 (b)는 건너뜁니다 (SASU_LLM_PROVIDER).[/yellow]")
+                break
+            label = f"(b) 넓히기 {name}"
+            groups[label] = []
+            for i in range(runs):
+                with console.status(f"LLM으로 질문을 넓혀 검색하는 중… {name} {i + 1}/{runs}"):
+                    groups[label].append(run_variant(conn, label, questions, index, expander))
+    shown = [s for s in SPLITS if any(split_of(q) == s for q in questions)]
+    summary = report(groups, shown, base)
+    cache_note = "넓히기 캐시 씀" if use_cache else "넓히기 캐시 안 씀"
+    console.print(f"질문 {len(questions)}개 · {'벡터 하이브리드' if index.has_vectors else 'BM25'} · "
+                  f"넓히기 {runs}번씩 ({cache_note}) · 95% Wilson 구간")
+
+    def pct(x: float) -> str:
+        return f"{x:.0%}"
+
+    def rate(r: dict) -> str:
+        return pct(r["mean"]) if r["min"] == r["max"] else f"{pct(r['mean'])} ({pct(r['min'])}~{pct(r['max'])})"
+
+    def ci(pair) -> str:
+        return f"{pct(pair[0])}~{pct(pair[1])}"
+
+    for s in shown:
+        first = next(iter(summary[s].values()))
+        table = Table(title=escape(f"[{s}] 정답 있는 질문 {first['specific']} · 일반 개념 {first['general']}"),
+                      title_justify="left")
+        for col in ("검색", "실행", "상위 6", "95% 구간", "1위", "95% 구간", "항상/흔들/틀림", "(a) 대비",
+                    "low_conf 일반·정답", "지연·넓히기(초)"):
+            table.add_column(col, justify="left" if col == "검색" else "right")
+        for name, r in summary[s].items():
+            st, pv = r["stability"], r["paired_vs_base"]
+            table.add_row(name, str(r["runs"]), rate(r["top6"]), ci(r["top6"]["pooled_ci"]), rate(r["top1"]),
+                          ci(r["top1"]["pooled_ci"]), f"{st['always']}/{st['flaky']}/{st['never']}",
+                          f"+{pv['wrong_to_right']} −{pv['right_to_wrong']}" if pv else "-",
+                          f"{pct(r['low_conf_general']['mean'])}·{pct(r['low_conf_specific']['mean'])}",
+                          f"{r['avg_seconds']:.2f}·{r['avg_expand_seconds']:.2f}")
+        console.print(table)
+        console.print("[dim]상위 6·1위: 실행 평균 (최소~최대) · 95% 구간: 질문×실행을 합친 Wilson · "
+                      "항상/흔들/틀림: 질문별 N번 중 맞힌 횟수 · (a) 대비: 다수결로 틀림→맞음 +, 맞음→틀림 − · "
+                      "low_conf: 일반 질문을 맞게 표시 · 정답 있는 질문을 잘못 표시[/dim]")
+        for name, r in summary[s].items():
+            if r["runs"] < 2:
+                continue
+            per = " · ".join(f"{pct(x)} [{ci(c)}]" for x, c in zip(r["top6"]["per_run"], r["top6"]["per_run_ci"]))
+            top1 = " · ".join(pct(x) for x in r["top1"]["per_run"])
+            dist = " ".join(f"{k}회:{v}" for k, v in r["stability"]["distribution"].items())
+            errors = f" · 넓히기 실패 {r['expand_errors']}번" if r["expand_errors"] else ""
+            console.print(f"  {name} 실행별 상위 6: {per}\n    1위: {top1} · 맞힌 횟수별 질문 수 {dist}{errors}")
+    for q in questions:
+        marks = []
+        for name, group in groups.items():
+            cases = [next(c for c in run.cases if c.id == q["id"]) for run in group]
+            short_name = "(a)" if name == base else name.removeprefix("(b) 넓히기 ")
+            if len(cases) == 1:
+                c = cases[0]
+                mark = f"{c.rank}위" if c.rank else ("low_conf" if not c.gold and c.low_confidence else "놓침")
+                mark += " (low_conf)" if c.low_confidence and c.gold else ""
+            elif q.get("gold"):
+                mark = f"{sum(c.rank is not None for c in cases)}/{len(cases)}"
+            else:
+                mark = f"low_conf {sum(c.low_confidence for c in cases)}/{len(cases)}"
+            marks.append(f"{short_name} {mark}")
+        last = next(c for c in list(groups.values())[-1][0].cases if c.id == q["id"])
+        terms = f" [dim]넓힘: {escape(', '.join(last.expanded_terms))}[/dim]" if last.expanded_terms else ""
+        line = escape(f"[{split_of(q)}] {q['id']} {q['question']} → {' · '.join(marks)}")
+        console.print(f"• {line}{terms}")
     if out:
+        meta = {"project": data["project"], "split": split, "runs": runs, "variants": names if not no_llm else [],
+                "expand_cache": use_cache, "search": "hybrid" if index.has_vectors else "bm25"}
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(to_json(variants), ensure_ascii=False, indent=1), encoding="utf-8")
-        console.print(f"[dim]질문별 결과: {out}[/dim]")
+        out.write_text(json.dumps(to_json(groups, shown, base, meta), ensure_ascii=False, indent=1), encoding="utf-8")
+        console.print(f"[dim]요약·질문별·실행별 결과: {out}[/dim]")
 
 
 @app.command("eval-why")

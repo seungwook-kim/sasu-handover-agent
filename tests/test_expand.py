@@ -1,15 +1,16 @@
 """LLM 질문 넓히기·후보 이유(why)·low_confidence (가짜 LLM)."""
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from sasu import db
-from sasu.evaluation.everyday_eval import load_set
+from sasu.evaluation.everyday_eval import load_set, select
 from sasu.indexer import index_repository
 from sasu.rag import expand as expand_mod
 from sasu.rag.answer import LLMError
-from sasu.rag.expand import QueryExpander, is_targeted, make_expander, parse_terms
+from sasu.rag.expand import VARIANTS, QueryExpander, is_targeted, make_expander, parse_terms, union_terms
 from sasu.rag.pipeline import choose_target, is_low_confidence, search_question
 from sasu.rag.search import MethodIndex
 from test_rag import FILES
@@ -130,10 +131,86 @@ def test_parse_terms_and_everyday_set():
     assert parse_terms("```json\n[\"lock\", \"잠금\"]\n```") == ["lock", "잠금"]
     assert parse_terms("[]") == [] and parse_terms("{}") == []
     data = load_set()
-    gold = [q for q in data["questions"] if q["gold"]]
-    general = [q for q in data["questions"] if not q["gold"]]
+    dev = select(data["questions"], "dev")  # split이 없으면 dev (가중치·문턱을 정한 질문)
+    gold = [q for q in dev if q["gold"]]
+    general = [q for q in dev if not q["gold"]]
     assert 12 <= len(gold) + len(general) <= 20 and 2 <= len(general) <= 3
-    assert all("." in g for q in gold for g in q["gold"])
+    assert all("." in g for q in data["questions"] for g in q["gold"])
+    assert len({q["id"] for q in data["questions"]}) == len(data["questions"])
+
+
+class CountingLLM(FakeLLM):
+    """부를 때마다 다른 답 (넓히기 흔들림 흉내)."""
+
+    def __init__(self, replies):
+        super().__init__()
+        self.replies = list(replies)
+
+    def chat(self, messages):
+        self.calls.append(messages)
+        return self.replies[(len(self.calls) - 1) % len(self.replies)]
+
+
+def test_default_variant_keeps_old_cache_key(conn, tmp_path, monkeypatch):
+    monkeypatch.delenv("SASU_EXPAND_VARIANT", raising=False)
+    question = "휴가 넣는 곳은 어디야?"
+    ex = QueryExpander(FakeLLM('["insert"]'), cache=tmp_path / "cache")
+    assert ex.variant == "default" and ex.prompt == expand_mod.SYSTEM_PROMPT
+    project = conn.execute("SELECT value FROM meta WHERE key = 'repo_path'").fetchone()[0]
+    old = hashlib.sha256(f"{project}\nfake-haiku\n{expand_mod.SYSTEM_PROMPT}\n{question}".encode("utf-8"))
+    assert ex._key(conn, question) == old.hexdigest()[:32]  # 예전 캐시를 그대로 쓴다
+    keys = {QueryExpander(FakeLLM(), cache=tmp_path, variant_name=v)._key(conn, question) for v in VARIANTS}
+    assert len(keys) == 3  # 변형마다 캐시 키가 다르다
+    monkeypatch.setenv("SASU_EXPAND_VARIANT", "strict")
+    assert expand_mod.variant() == "strict" and QueryExpander(FakeLLM()).variant == "strict"
+    monkeypatch.setenv("SASU_EXPAND_VARIANT", "모름")
+    assert expand_mod.variant() == "default"
+    with pytest.raises(ValueError):
+        QueryExpander(FakeLLM(), variant_name="모름")
+
+
+def test_strict_variant_uses_fixed_prompt(conn, tmp_path):
+    llm = FakeLLM('["Vcatn", "insert", "vacation", "휴가신청"]')
+    ex = QueryExpander(llm, cache=tmp_path / "cache", variant_name="strict")
+    assert ex.expand(conn, "휴가 넣는 곳은 어디야?") == ["Vcatn", "insert", "vacation", "휴가신청"]
+    system = llm.calls[0][0]["content"]
+    assert system == expand_mod.STRICT_PROMPT and "6~10개" in system and "예 2" in system
+    assert ex.last_weights is None  # strict는 말마다 같은 가중치
+
+
+def test_union2_merges_two_runs_with_weights(conn, tmp_path):
+    assert union_terms([["Login", "lock", "잠금"], ["login", "count"]], (0.7, 0.5)) == (
+        ["Login", "lock", "잠금", "count"], {"Login": 0.7, "lock": 0.5, "잠금": 0.5, "count": 0.5})
+    assert union_terms([["a"], ["a"]])[1] == {"a": expand_mod.UNION_WEIGHTS[0]}
+    llm = CountingLLM(['["insert", "vacation"]', '["insert", "remain"]'])
+    ex = QueryExpander(llm, cache=tmp_path / "cache", variant_name="union2")
+    question = "휴가 넣는 곳은 어디야?"
+    assert ex.expand(conn, question) == ["insert", "vacation", "remain"] and len(llm.calls) == 2
+    assert ex.last_weights == {"insert": 0.7, "vacation": 0.5, "remain": 0.5}
+    # 캐시에는 두 번의 원래 출력을 두고, 다시 읽어도 같은 합집합·가중치
+    assert ex.expand(conn, question) == ["insert", "vacation", "remain"] and ex.last_cached and len(llm.calls) == 2
+    assert ex.last_weights == {"insert": 0.7, "vacation": 0.5, "remain": 0.5}
+    # 검색은 말별 가중치를 쓴다: 한 번만 나온 말은 기본(0.7)보다 낮게
+    index = MethodIndex(conn)
+    dao = _mid(index, "VacationDAO.insert")
+    q = "등록은 어디서 해?"
+    same = index.bm25(q, extra_terms=["insert"])
+    assert index.bm25(q, extra_terms=["insert"], extra_weights={}) == same  # 가중치가 없는 말은 기본값
+    assert index.bm25(q, extra_terms=["insert"], extra_weights={"insert": 0.5})[dao] < same[dao]
+    r = search_question(conn, q, expander=QueryExpander(CountingLLM(['["insert"]', '["delete"]']),
+                                                        cache=tmp_path / "c2", variant_name="union2"), index=index)
+    assert r.expanded_terms == ["insert", "delete"]
+
+
+def test_no_cache_neither_reads_nor_writes(conn, tmp_path):
+    cache = tmp_path / "cache"
+    QueryExpander(FakeLLM('["old"]'), cache=cache).expand(conn, "휴가 넣는 곳은 어디야?")
+    before = {p: p.read_text(encoding="utf-8") for p in cache.glob("*.json")}
+    llm = FakeLLM('["new"]')
+    ex = QueryExpander(llm, cache=cache, use_cache=False)
+    assert ex.expand(conn, "휴가 넣는 곳은 어디야?") == ["new"] and not ex.last_cached and len(llm.calls) == 1
+    ex.expand(conn, "연차는 어디서 봐?")
+    assert {p: p.read_text(encoding="utf-8") for p in cache.glob("*.json")} == before
 
 
 def _mid(index: MethodIndex, label: str) -> int:

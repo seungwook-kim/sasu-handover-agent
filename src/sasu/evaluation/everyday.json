@@ -1,6 +1,6 @@
 {
   "project": "egovframe-common-components",
-  "about": "일상어 검색 평가 세트. 질문은 사용성 시험(페르소나 20명)의 할 일·세션 기록에서 나온 한국어 일상어. 정답은 eGovFrame 공통컴포넌트 v5.0.0 코드를 직접 읽어 정한 메서드(Class.method) 집합이고, 상위 6 후보에 하나라도 있으면 맞힘. gold가 빈 질문은 코드에 답이 없는 일반 개념 질문으로, 1위 후보를 low_confidence로 표시해야 맞힘.",
+  "about": "일상어 검색 평가 세트 (eGovFrame 공통컴포넌트 v5.0.0). 질문은 한국어 일상어이고 정답은 코드를 직접 읽어 정한 메서드(Class.method) 집합으로, 상위 6 후보에 하나라도 있으면 맞힘. gold가 빈 질문은 코드에 답이 없는 일반 개념 질문으로, 1위 후보를 low_confidence로 표시해야 맞힘. split: dev 19개(E01~E16 정답 있음, G01~G03 일반) = 사용성 시험(페르소나 20명) 기록에서 나온 질문으로, 넓히기 가중치 0.7·low_confidence 문턱 12와 넓히기 변형 선택을 이 세트로 정했다. test 52개(T01~T44 정답 있음, H01~H08 일반) = 영역을 나눠(A: uss·uat·sec·ext·sts, B: cop·sym·dam·utl·ssi·cmm) 새로 쓴 질문으로, 결정에 쓰지 않고 채점만 한다. 정답은 사람이 아니라 AI가 코드를 읽어 정했다 (evidence에 근거 한 줄). area는 정답 클래스의 egovframe.com 다음 두 마디, kind는 질문 종류(위치·동작·왜·테이블).",
   "questions": [
     {
       "id": "E01",
@@ -117,6 +117,471 @@
       "question": "MyBatis랑 JPA 중에 뭐가 더 좋아?",
       "gold": [],
       "evidence": "일반 개념 질문"
+    },
+    {
+      "id": "T01",
+      "question": "등록된 IP가 아닌 곳에서 로그인하면 막혀?",
+      "gold": ["EgovLoginPolicyFilter.doFilter", "EgovLoginPolicyServiceImpl.selectLoginPolicy", "LoginPolicyDAO.selectLoginPolicy"],
+      "evidence": "EgovLoginPolicyFilter.doFilter: 로그인정책 LMTT_AT=Y이고 접속 IP가 IP_INFO와 다르면 fail.common.login.ip 메시지로 로그인 화면에 돌려보냄",
+      "split": "test",
+      "area": "uat.uap"
+    },
+    {
+      "id": "T02",
+      "question": "비밀번호 찾기 하면 임시 비밀번호는 어떻게 만들어서 보내?",
+      "gold": ["EgovLoginController.searchPassword", "EgovLoginServiceImpl.searchPassword", "LoginDAO.searchPassword",
+               "LoginDAO.updatePassword"],
+      "evidence": "EgovLoginServiceImpl.searchPassword: 영문·숫자 섞은 8자리 임시 비밀번호 생성 → 암호화해 updatePassword → sndngMailRegistService.insertSndngMail로 메일 발송",
+      "split": "test",
+      "area": "uat.uia"
+    },
+    {
+      "id": "T03",
+      "question": "비밀번호 바꾼 지 오래됐다고 뜨는 팝업은 날짜를 어디서 계산해?",
+      "gold": ["EgovLoginController.noticeExpirePwd", "EgovLoginServiceImpl.selectPassedDayChangePWD", "LoginDAO.selectPassedDayChangePWD"],
+      "evidence": "noticeExpirePwd: Globals.ExpirePwdDay와 selectPassedDayChangePWD(비밀번호 변경 후 경과일)로 elapsedTimeExpiration 계산해 EgovExpirePwd 화면",
+      "split": "test",
+      "area": "uat.uia"
+    },
+    {
+      "id": "T04",
+      "question": "로그인 성공하면 세션을 새로 안 만들고 세션 아이디만 바꾸는 이유가 뭐야?",
+      "gold": ["EgovLoginController.actionLogin", "EgovSpringSecurityLoginFilter.doFilterInternal"],
+      "evidence": "actionLogin 주석 '세션 고정 공격 방지 (세션 속성 유지하며 ID만 변경)' request.changeSessionId(); 필터 주석 'invalidate()는 CSRF 토큰·SecurityContext·frameset 세션을 깨뜨린다'",
+      "split": "test",
+      "area": "uat.uia"
+    },
+    {
+      "id": "T05",
+      "question": "권한에 롤을 여러 개 배정해서 저장할 때 왜 한 번에 묶어서 처리해?",
+      "gold": ["EgovAuthorRoleController.insertAuthorRole", "EgovAuthorRoleManageServiceImpl.updateAuthorRoleList", "EgovAuthorRoleManageServiceImpl.deleteAuthorRole",
+               "EgovAuthorRoleManageServiceImpl.insertAuthorRole"],
+      "evidence": "insertAuthorRole 주석 '전체 목록을 서비스 메서드 하나로 넘겨 한 트랜잭션에서 처리한다(부분실패 시 정합성 보호)', updateAuthorRoleList Javadoc '항목 중간에 예외가 나면 목록 전체가 롤백'",
+      "split": "test",
+      "area": "sec.ram"
+    },
+    {
+      "id": "T06",
+      "question": "사용자한테 권한을 주면 어느 테이블에 저장돼?",
+      "gold": ["EgovAuthorGroupController.insertAuthorGroup", "EgovAuthorGroupServiceImpl.updateAuthorGroupList", "EgovAuthorGroupServiceImpl.insertAuthorGroup",
+               "EgovAuthorGroupServiceImpl.updateAuthorGroup", "AuthorGroupDAO.insertAuthorGroup", "AuthorGroupDAO.updateAuthorGroup"],
+      "evidence": "updateAuthorGroupList: regYn=N이면 insertAuthorGroup, 아니면 updateAuthorGroup. SQL은 COMTNEMPLYRSCRTYESTBS(SCRTY_DTRMN_TRGET_ID, MBER_TY_CODE, AUTHOR_CODE)에 INSERT/UPDATE",
+      "split": "test",
+      "area": "sec.rgm"
+    },
+    {
+      "id": "T07",
+      "question": "자동입력 방지 문자는 맞는지 확인하고 나면 왜 바로 지워?",
+      "gold": ["EgovCaptchaController.result", "EgovCaptchaController.removeCaptchaFromSession", "EgovCaptchaController.generate"],
+      "evidence": "result: '일회성: 비교 전에 제거하여 재사용 차단' removeCaptchaFromSession 후 세션값과 입력값 비교. generate가 세션에 captcha.<pgNm>로 저장",
+      "split": "test",
+      "area": "ext.captcha"
+    },
+    {
+      "id": "T08",
+      "question": "Q&A에서 다른 사람이 쓴 질문 글도 열어볼 수 있어?",
+      "gold": ["EgovQnaController.selectQnaDetail", "EgovXssChecker.checkerUserXss", "EgovQnaServiceImpl.selectQnaDetail",
+               "EgovQnaDAO.selectQnaDetail"],
+      "evidence": "selectQnaDetail 주석 '작성자 본인만 열람 가능하도록 소유권 검증' EgovXssChecker.checkerUserXss(request, 작성자ID): 로그인 사용자 uniqId와 다르면 EgovXssException",
+      "split": "test",
+      "area": "uss.olh"
+    },
+    {
+      "id": "T09",
+      "question": "네이버나 카카오로 로그인하고 돌아올 때 세션에 넣어 둔 임의 값을 왜 다시 맞춰 봐?",
+      "gold": ["EgovSignupController.oauthLoginCallback", "EgovSignupController.login", "EgovSignupController.generateState"],
+      "evidence": "oauthLoginCallback 주석 'CSRF(로그인 CSRF) 방어 - 콜백의 state를 세션에 보관한 값과 대조한다. 1회용이므로 검증 후 제거', login이 generateState로 만든 state를 세션에 저장",
+      "split": "test",
+      "area": "ext.oauth"
+    },
+    {
+      "id": "T10",
+      "question": "게시물 통계 집계가 같은 날 두 번 돌면 중복으로 쌓여?",
+      "gold": ["EgovBbsStatsScheduling.summaryBbsStats", "EgovBbsStatsServiceImpl.summaryBbsStats", "BbsStatsDAO.summaryBbsStats"],
+      "evidence": "BbsStatsDAO.summaryBbsStats: 게시판 유형마다 '집계 여부 조회'(BbsStatsDAO.selectBbsSummary) 결과가 없을 때만 COMTSBBSSUMMARY에 insert. 스케줄은 context-scheduling-sts-bst.xml 24시간 간격",
+      "split": "test",
+      "area": "sts.bst"
+    },
+    {
+      "id": "T11",
+      "question": "회원 수 통계는 어느 테이블에서 세서 어디에 쌓아?",
+      "gold": ["EgovUserStatsScheduling.summaryUserStats", "EgovUserStatsServiceImpl.summaryUserStats", "UserStatsDAO.summaryUserStats"],
+      "evidence": "summaryUserStats SQL: COMTNGNRLMBER·COMTNENTRPRSMBER·COMTNEMPLYRINFO를 세어 INSERT INTO COMTSUSERSUMMARY (전날 날짜 NOT EXISTS 조건)",
+      "split": "test",
+      "area": "sts.ust"
+    },
+    {
+      "id": "T12",
+      "question": "게시판 말고 다른 화면에서 첨부파일 받아도 다운로드 통계에 잡혀?",
+      "gold": ["EgovDtaUseStatsServiceImpl.insertDtaUseStats", "DtaUseStatsDAO.selectInsertDtaUseStats", "DtaUseStatsDAO.insertDtaUseStats"],
+      "evidence": "insertDtaUseStats(파일 다운로드 AOP): 복호화된 atchFileId/fileSn이 없으면 '통계 기록하지 않음 (게시판 외 다운로드)', selectInsertDtaUseStats 결과가 null이면 insert 안 함",
+      "split": "test",
+      "area": "sts.dst"
+    },
+    {
+      "id": "T13",
+      "question": "접속 통계를 개인별로 보면 어느 테이블 기준으로 세?",
+      "gold": ["EgovConectStatsController.selectUserStats", "EgovConectStatsServiceImpl.selectConectStats", "ConectStatsDAO.selectConectStats"],
+      "evidence": "ConectStatsDAO.selectConectStats SQL: statsKind=PRSONAL이면 COMTNLOGINLOG를 COMVNUSERMASTER와 조인해 CONECT_ID 건수, SERVICE면 COMTSSYSLOGSUMMARY",
+      "split": "test",
+      "area": "sts.cst"
+    },
+    {
+      "id": "T14",
+      "question": "쪽지를 여러 명한테 보내면 어떤 테이블에 어떻게 쌓여?",
+      "gold": ["EgovNoteManageController.EgovNoteRecptnRegist", "EgovNoteManageServiceImpl.insertNoteManage", "NoteManageDao.insertNoteManage",
+               "NoteManageDao.insertNoteTrnsmit", "NoteManageDao.insertNoteRecptn"],
+      "evidence": "insertNoteManage: 쪽지(COMTNNOTE) 1건, 보낸쪽지(COMTNNOTETRNSMIT) 1건, 수신자 목록만큼 받은쪽지(COMTNNOTERECPTN)를 OPEN_YN=N으로 반복 등록",
+      "split": "test",
+      "area": "uss.ion"
+    },
+    {
+      "id": "T15",
+      "question": "받은 쪽지를 지우면 보낸 사람 보낸 쪽지함에서도 없어져?",
+      "gold": ["EgovNoteRecptnServiceImpl.deleteNoteRecptn", "NoteRecptnDao.selectNoteTrnsmitRelationCnt", "NoteRecptnDao.selectNoteRecptnRelationCnt",
+               "NoteRecptnDao.deleteNoteRecptn", "NoteRecptnDao.deleteNoteTrnsmit", "NoteRecptnDao.deleteNoteManage"],
+      "evidence": "deleteNoteRecptn: 보낸쪽지 건수==1 && 받은쪽지 건수==1이면 받은·보낸·쪽지 모두 삭제, 아니면 받은쪽지만 삭제",
+      "split": "test",
+      "area": "uss.ion"
+    },
+    {
+      "id": "T16",
+      "question": "팝업창 열 때 관리자가 등록 안 한 화면 주소면 왜 에러 화면이 떠?",
+      "gold": ["EgovPopupManageController.egovPopupManagePopupOpen", "EgovPopupManageServiceImpl.selectPopupWhiteList", "PopupManageDAO.selectPopupWhiteList"],
+      "evidence": "egovPopupManagePopupOpen 주석 '뷰 이름 인젝션 방지' — 콜론·/·WEB-INF가 든 값 거부, selectPopupWhiteList에 같은 fileUrl이 없으면 egovError 반환",
+      "split": "test",
+      "area": "uss.ion"
+    },
+    {
+      "id": "T17",
+      "question": "약식결재를 승인하거나 반려하면 상태값이 뭐로 바뀌어?",
+      "gold": ["EgovInfrmlSanctnServiceImpl.updateInfrmlSanctnConfm", "EgovInfrmlSanctnServiceImpl.updateInfrmlSanctnReturn", "EgovInfrmlSanctnServiceImpl.insertInfrmlSanctn",
+               "InfrmlSanctnDAO.updateInfrmlSanctnConfm"],
+      "evidence": "insertInfrmlSanctn은 confmAt=A(신청), updateInfrmlSanctnConfm은 C(승인), updateInfrmlSanctnReturn은 R(반려)로 InfrmlSanctnDAO.updateInfrmlSanctnConfm 호출",
+      "split": "test",
+      "area": "uss.ion"
+    },
+    {
+      "id": "T18",
+      "question": "로그인 잠긴 계정은 관리자가 어디서 풀어줘?",
+      "gold": ["EgovMberManageController.updateLockIncorrect", "EgovMberManageServiceImpl.updateLockIncorrect", "MberManageDAO.updateLockIncorrect",
+               "EgovEmplyrManageController.updateLockIncorrect", "EgovEmplyrManageServiceImpl.updateLockIncorrect", "EmplyrManageDAO.updateLockIncorrect",
+               "EgovEntrprsManageController.updateLockIncorrect", "EgovEntrprsManageServiceImpl.updateLockIncorrect", "EntrprsManageDAO.updateLockIncorrect"],
+      "evidence": "EgovMberManageController.updateLockIncorrect Javadoc '로그인인증제한 해제', @RequireAdmin + '계정 잠금해제는 관리자만'. 업무사용자·기업회원 컨트롤러에도 같은 이름의 해제 기능",
+      "split": "test",
+      "area": "uss.umt"
+    },
+    {
+      "id": "T19",
+      "question": "회원 목록에서 여러 명 골라서 지우면 회원 종류별로 어떻게 지워?",
+      "gold": ["EgovMberManageController.deleteMber", "EgovMberManageServiceImpl.deleteMber", "EmplyrManageDAO.deleteEmplyr",
+               "MberManageDAO.deleteMber", "EntrprsManageDAO.deleteEntrprsmber"],
+      "evidence": "EgovMberManageServiceImpl.deleteMber: 'USR03:아이디' 형식을 쪼개 USR03=업무사용자, USR01=일반회원, USR02=기업회원 DAO로 각각 삭제",
+      "split": "test",
+      "area": "uss.umt"
+    },
+    {
+      "id": "T20",
+      "question": "회원가입할 때 보여주는 약관 내용은 어디서 가져와?",
+      "gold": ["EgovMberManageController.sbscrbEntrprsMber", "EgovEntrprsManageController.sbscrbEntrprsMber", "EgovMberManageServiceImpl.selectStplat",
+               "EgovEntrprsManageServiceImpl.selectStplat", "MberManageDAO.selectStplat", "EntrprsManageDAO.selectStplat"],
+      "evidence": "EgovMberManageController.sbscrbEntrprsMber Javadoc '일반회원 약관확인': stplatId=STPLAT_0000000000001로 selectStplat 조회해 EgovStplatCnfirm 화면. 기업회원은 EgovStplatCnfirmEntrprs.do",
+      "split": "test",
+      "area": "uss.umt"
+    },
+    {
+      "id": "T21",
+      "question": "온라인 투표에 같은 사람이 두 번 참여하면 어떻게 돼?",
+      "gold": ["EgovOnlinePollPartcptnController.egovOnlinePollPartcptnRegist", "EgovOnlinePollPartcptnServiceImpl.selectOnlinePollResult", "OnlinePollPartcptnDao.selectOnlinePollResult",
+               "EgovOnlinePollPartcptnServiceImpl.insertOnlinePollResult"],
+      "evidence": "egovOnlinePollPartcptnRegist: '투표여부 체크' selectOnlinePollResult != 0이면 '한 온라인POLL엔 한번만 투표 가능합니다' 알림 후 목록으로, 아니면 insertOnlinePollResult",
+      "split": "test",
+      "area": "uss.olp"
+    },
+    {
+      "id": "T22",
+      "question": "회의실 예약할 때 시간이 겹치는지는 어디서 확인해?",
+      "gold": ["EgovMtgPlaceManageController.mtgPlaceResveDplactCeck", "EgovMtgPlaceManageServiceImpl.mtgPlaceResveDplactCeck", "MtgPlaceManageDAO.mtgPlaceResveDplactCeck",
+               "EgovMtgPlaceManageController.insertMtgPlaceResveManage"],
+      "evidence": "mtgPlaceResveDplactCeck Javadoc '회의실 중복여부 체크' 중복건수 반환, insertMtgPlaceResveManage는 dplactCeck가 Y가 아니면 rejectValue로 등록 거부",
+      "split": "test",
+      "area": "uss.ion"
+    },
+    {
+      "id": "T23",
+      "question": "첨부파일 받는 주소에 들어가는 파일 번호는 왜 알아볼 수 없게 암호화돼 있어?",
+      "gold": ["EgovFileDownloadController.cvplFileDownload", "EgovFileMngController.encryptSession", "EgovFileMngController.selectFileInfs"],
+      "evidence": "cvplFileDownload 주석 '암호화된 atchFileId를 복호화하고 동일한 세션인 경우만 다운로드할 수 있다 - 파일아이디가 유추 불가능하도록 조치'. 세션ID|파일ID를 복호화해 세션이 다르면 '권한이 없습니다' 예외. 목록 화면(selectFileInfs)에서 encryptSession으로 만든다",
+      "split": "test",
+      "area": "cmm.web",
+      "kind": "왜"
+    },
+    {
+      "id": "T24",
+      "question": "화면 콤보박스에 나오는 코드 목록은 어디서 꺼내 와?",
+      "gold": ["EgovCmmUseServiceImpl.selectCmmCodeDetail", "EgovCmmUseServiceImpl.selectCmmCodeDetails", "CmmUseDAO.selectCmmCodeDetail"],
+      "evidence": "EgovCmmUseServiceImpl.selectCmmCodeDetail '공통코드를 조회한다' → CmmUseDAO.selectCmmCodeDetail(COMTCCMMNDETAILCODE). selectCmmCodeDetails는 여러 코드ID를 맵으로 묶어 돌려준다",
+      "split": "test",
+      "area": "cmm.service",
+      "kind": "위치"
+    },
+    {
+      "id": "T25",
+      "question": "글 쓸 때 에디터에 그림 대신 실행 파일을 올리면 어떻게 돼?",
+      "gold": ["EgovWebEditorImageController.uploadImageFiles", "EgovFileUploadUtil.uploadFilesExt", "EgovFileUploadUtil.isAllowedExtension",
+               "EgovWebEditorImageController.imageUploadCk"],
+      "evidence": "uploadFilesExt: 확장자가 없거나 isAllowedExtension(Globals.fileUpload.Extensions 화이트리스트)에 없으면 SecurityException. uploadImageFiles가 잡아 url=''과 errors.file.extension 메시지를 돌려준다(저장 안 함)",
+      "split": "test",
+      "area": "utl.wed",
+      "kind": "동작"
+    },
+    {
+      "id": "T26",
+      "question": "웹 서버가 살아 있는지 감시할 때 왜 페이지 본문은 안 받아 와?",
+      "gold": ["HttpMntrngChecker.executeSecureConnection", "HttpMntrngChecker.getPrductStatus", "HttpMntrngScheduling.monitorHttp"],
+      "evidence": "executeSecureConnection: '// HEAD 요청으로 변경 (불필요한 데이터 전송 방지)', '리다이렉트 비활성화 (화이트리스트 우회 방지)', 2xx·3xx면 01(정상) 아니면 02. monitorHttp가 getPrductStatus를 부른다",
+      "split": "test",
+      "area": "utl.sys",
+      "kind": "왜"
+    },
+    {
+      "id": "T27",
+      "question": "다른 사람이 단 댓글을 내가 지울 수 있어?",
+      "gold": ["EgovArticleCommentController.deleteArticleComment", "EgovArticleCommentController.checkCommentOwner", "EgovXssChecker.checkerUserXss",
+               "EgovArticleCommentServiceImpl.selectArticleCommentDetail"],
+      "evidence": "deleteArticleComment가 checkCommentOwner로 댓글 작성자(wrterId)를 조회해 EgovXssChecker.checkerUserXss에 넘기고, 로그인 사용자 uniqId와 다르면 EgovXssException(XSS00002)",
+      "split": "test",
+      "area": "cop.cmt",
+      "kind": "동작"
+    },
+    {
+      "id": "T28",
+      "question": "게시판마다 댓글이나 만족도 조사를 쓸지 말지는 어느 테이블에 저장돼?",
+      "gold": ["BBSAddedOptionsDAO.insertAddedOptionsInf", "BBSAddedOptionsDAO.selectAddedOptionsInf", "EgovBBSMasterServiceImpl.insertBBSMasterInf",
+               "EgovArticleCommentServiceImpl.canUseComment"],
+      "evidence": "insertBBSMasterInf: option이 comment/stsfdg면 addedOptionsDAO.insertAddedOptionsInf(COMTNBBSMASTEROPTN). canUseComment는 selectAddedOptionsInf의 commentAt='Y'로 판단",
+      "split": "test",
+      "area": "cop.bbs",
+      "kind": "테이블"
+    },
+    {
+      "id": "T29",
+      "question": "로그인 안 한 사람이 남긴 만족도 평가를 지울 때 비밀번호 확인은 어디서 해?",
+      "gold": ["EgovBBSSatisfactionController.deleteAnonymousSatisfaction", "EgovBBSSatisfactionServiceImpl.getSatisfactionPassword", "EgovBBSSatisfactionController.insertAnonymousSatisfaction"],
+      "evidence": "deleteAnonymousSatisfaction: getSatisfactionPassword로 저장값을 읽고 입력값을 encryptPassword(입력, stsfdgNo)로 암호화해 다르면 cop.password.not.same.msg. 등록(insertAnonymousSatisfaction) 때 같은 방식으로 암호화해 저장",
+      "split": "test",
+      "area": "cop.stf",
+      "kind": "위치"
+    },
+    {
+      "id": "T30",
+      "question": "블로그 만들 때 블로그 정보랑 만든 사람 정보는 왜 한 번에 같이 저장해?",
+      "gold": ["EgovBBSMasterServiceImpl.insertBlogMasterAndBoardBlogUserRqst", "EgovBBSMasterController.insertBlogMaster", "EgovBBSMasterServiceImpl.insertBlogMaster",
+               "EgovBBSMasterServiceImpl.insertBoardBlogUserRqst"],
+      "evidence": "insertBlogMasterAndBoardBlogUserRqst 주석 '블로그 정보와 개설자 정보 등록한다 // Controller는 Transaction처리를 하지 않아 Controller에서 오류 발생 시 데이터 정합성 오류 문제 발생'",
+      "split": "test",
+      "area": "cop.bbs",
+      "kind": "왜"
+    },
+    {
+      "id": "T31",
+      "question": "메일 받는 사람을 여러 명 넣었는데 중간에 한 명한테 보내다 실패하면 나머지는 어떻게 돼?",
+      "gold": ["EgovSndngMailRegistServiceImpl.insertSndngMail", "EgovSndngMailServiceImpl.sndngMail", "SndngMailRegistDAO.updateSndngMail",
+               "EgovSndngMailRegistController.insertSndngMail"],
+      "evidence": "insertSndngMail: 수신자를 ';'로 나눠 한 명씩 등록·발송, sndngMail이 false면 결과코드 F로 갱신하고 바로 return false — 뒤 수신자는 보내지 않는다",
+      "split": "test",
+      "area": "cop.ems",
+      "kind": "동작"
+    },
+    {
+      "id": "T32",
+      "question": "보낸 메일 기록이랑 성공·실패 결과는 어느 테이블에 남아?",
+      "gold": ["SndngMailRegistDAO.insertSndngMail", "SndngMailRegistDAO.updateSndngMail", "EgovSndngMailRegistServiceImpl.insertSndngMail",
+               "EgovSndngMailRegistServiceImpl.recptnXmlData"],
+      "evidence": "insertSndngMail이 결과코드 R로 COMTHEMAILDSPTCHMANAGE에 등록, 실패 시 F, recptnXmlData가 C(완료)로 updateSndngMail",
+      "split": "test",
+      "area": "cop.ems",
+      "kind": "테이블"
+    },
+    {
+      "id": "T33",
+      "question": "간부 일정을 매주 반복으로 등록하면 날짜가 어떻게 들어가?",
+      "gold": ["EgovLeaderSchdulServiceImpl.insertLeaderSchdul", "EgovLeaderSchdulServiceImpl.insertLeaderSchdulDe", "LeaderSchdulDAO.insertLeaderSchdulDe",
+               "EgovLeaderSchdulController.insertLeaderSchdul"],
+      "evidence": "insertLeaderSchdulDe: 반복구분 2(매일)·3(매주, +7일)·4(매월, +100)으로 시작일부터 종료일까지 날짜마다 COMTNLEADERSCHDULDE에 한 줄씩 insert. 시작=종료이거나 1이면 한 줄",
+      "split": "test",
+      "area": "cop.smt",
+      "kind": "동작"
+    },
+    {
+      "id": "T34",
+      "question": "메모 보고를 받은 사람이 읽었다는 표시는 어디서 남겨?",
+      "gold": ["EgovMemoReprtController.selectMemoReprt", "EgovMemoReprtServiceImpl.readMemoReprt", "MemoReprtDAO.readMemoReprt",
+               "EgovMemoReprtServiceImpl.selectMemoReprt"],
+      "evidence": "Controller.selectMemoReprt: 로그인 사용자가 보고대상자(reportrId)면 readMemoReprt로 보고자 조회일시를 지금 시각으로 저장. ServiceImpl.selectMemoReprt는 그 일시가 없으면 '미확인', 있으면 '확인 (일시)'",
+      "split": "test",
+      "area": "cop.smt",
+      "kind": "위치"
+    },
+    {
+      "id": "T35",
+      "question": "커뮤니티 관리자도 스스로 탈퇴할 수 있어?",
+      "gold": ["EgovCommuManageController.deleteCmmntyUserBySelf", "EgovCommuManageServiceImpl.selectIsCommuAdmin", "EgovCommuManageServiceImpl.deleteCommuUser"],
+      "evidence": "deleteCmmntyUserBySelf: selectIsCommuAdmin이 true면 '관리자는 탈퇴할수 없습니다' 메시지, 아니면 deleteCommuUser",
+      "split": "test",
+      "area": "cop.cmy",
+      "kind": "동작"
+    },
+    {
+      "id": "T36",
+      "question": "배치 실행 결과가 '에러'로 찍히는 건 어떤 경우야?",
+      "gold": ["BatchJobListener.jobWasExecuted", "BatchShellScriptJob.execute", "EgovBatchSchdulServiceImpl.updateBatchResult"],
+      "evidence": "jobWasExecuted: 작업 결과값이 0이면 상태 01, 0이 아니면 02(에러, '배치작업이 결과값 [n]를 리턴'), JobExecutionException이 있어도 02. 결과값은 BatchShellScriptJob.execute가 셸 프로세스 exitValue를 setResult",
+      "split": "test",
+      "area": "sym.bat",
+      "kind": "동작"
+    },
+    {
+      "id": "T37",
+      "question": "서버가 뜰 때 등록돼 있던 배치 스케줄은 어디서 읽어서 걸어 줘?",
+      "gold": ["BatchScheduler.init", "BatchScheduler.insertBatchSchdul", "EgovBatchSchdulServiceImpl.selectBatchSchdulList"],
+      "evidence": "BatchScheduler.init '배치스케줄테이블을 읽어서 Quartz 스케줄러를 초기화한다': selectBatchSchdulList로 목록을 읽어 각각 insertBatchSchdul(Job·Trigger 등록) 후 sched.start()",
+      "split": "test",
+      "area": "sym.bat",
+      "kind": "위치"
+    },
+    {
+      "id": "T38",
+      "question": "프로그램 변경 요청을 처리하면 요청한 사람한테 가는 알림 메일은 어디서 보내?",
+      "gold": ["EgovProgrmManageController.updateProgrmChangRequstProcess", "EgovProgrmManageServiceImpl.selectRqesterEmail", "EgovProgrmManageServiceImpl.updateProgrmChangeRequstProcess",
+               "EgovSndngMailRegistServiceImpl.insertSndngMail"],
+      "evidence": "updateProgrmChangRequstProcess: 처리 담당자 본인일 때만 갱신 후 selectRqesterEmail로 요청자 메일을 찾아 처리상태(A/P/R/C) 문구를 넣어 sndngMailRegistService.insertSndngMail",
+      "split": "test",
+      "area": "sym.prm",
+      "kind": "위치"
+    },
+    {
+      "id": "T39",
+      "question": "우편번호를 엑셀로 올리면 원래 있던 우편번호는 그대로 남아?",
+      "gold": ["EgovCcmZipManageServiceImpl.insertExcelZip", "ZipManageDAO.insertExcelZip", "EgovCcmZipManageController.insertExcelZip",
+               "EgovCcmRdnmadZipServiceImpl.insertExcelZip", "RdnmadZipDAO.insertExcelZip"],
+      "evidence": "ZipManageDAO.insertExcelZip은 delete(ZipManageDAO.deleteAllZip)로 전체 삭제, 그 뒤 ServiceImpl이 excelZipService.uploadExcel로 새로 넣는다(도로명 우편번호도 RdnmadZipDAO 같은 방식). 컨트롤러는 xls·xlsx만 받는다",
+      "split": "test",
+      "area": "sym.ccm",
+      "kind": "동작"
+    },
+    {
+      "id": "T40",
+      "question": "법정동 코드 받아오기를 돌리면 전국 데이터가 다 들어와?",
+      "gold": ["EgovAdministCodeRecptnServiceImpl.requestString", "EgovAdministCodeRecptnServiceImpl.apiLink", "EgovAdministCodeRecptnServiceImpl.insertAdministCodeRecptn",
+               "EgovAdministCodeRecptnServiceImpl.registAdministCode"],
+      "evidence": "requestString: data.go.kr StanReginCd API 요청에 locatadd_nm=서울특별시를 고정으로 붙인다 → 서울만. registAdministCode는 이미 있는 코드는 update, 없으면 insert",
+      "split": "test",
+      "area": "sym.ccm",
+      "kind": "동작"
+    },
+    {
+      "id": "T41",
+      "question": "메뉴 일괄 초기화를 누르면 어떤 테이블이 비워져?",
+      "gold": ["EgovMenuManageServiceImpl.menuBndeAllDelete", "EgovMenuManageController.menuBndeAllDelete", "MenuManageDAO.deleteAllMenuList",
+               "ProgrmManageDAO.deleteAllProgrm", "ProgrmManageDAO.deleteAllProgrmDtls"],
+      "evidence": "menuBndeAllDelete '메뉴목록테이블, 프로그램 목록테이블 전체 삭제': 프로그램변경내역(COMTHPROGRMCHANGEDTLS)·메뉴정보(COMTNMENUINFO)·프로그램목록(COMTNPROGRMLIST) 순서로 삭제",
+      "split": "test",
+      "area": "sym.mnu",
+      "kind": "테이블"
+    },
+    {
+      "id": "T42",
+      "question": "웹 접속 로그는 계속 쌓이기만 해? 오래된 건 지워져?",
+      "gold": ["EgovWebLogScheduling.webLogSummary", "EgovWebLogServiceImpl.logInsertWebLogSummary", "WebLogDAO.logInsertWebLogSummary",
+               "EgovWebLogInterceptor.postHandle"],
+      "evidence": "webLogSummary '전날의 로그를 요약하여 입력하고, 6개월전의 로그를 삭제한다' → WebLogDAO가 logInsertWebLogSummary(COMTSWEBLOGSUMMARY) 후 logDeleteWebLogSummary(COMTNWEBLOG 6개월 이전 DELETE). 로그는 EgovWebLogInterceptor.postHandle이 쌓는다",
+      "split": "test",
+      "area": "sym.log",
+      "kind": "동작"
+    },
+    {
+      "id": "T43",
+      "question": "지식 요청 글에 답변이 달려 있으면 그 글을 지울 수 있어?",
+      "gold": ["EgovRequestOfferController.EgovRequestOfferDetail", "EgovRequestOfferServiceImpl.selectRequestOfferDelCnt", "RequestOfferDao.selectRequestOfferDelCnt",
+               "EgovRequestOfferServiceImpl.deleteRequestOffer"],
+      "evidence": "EgovRequestOfferDetail(cmd=del): selectRequestOfferDelCnt('삭제시 하위 답변 건수')가 0보다 크면 '하위 답변이 등록되어 있어 삭제할수 없습니다!' 알림, 아니면 deleteRequestOffer",
+      "split": "test",
+      "area": "dam.spe",
+      "kind": "동작"
+    },
+    {
+      "id": "T44",
+      "question": "시스템 연계 요청을 승인하면 어느 테이블 값이 바뀌어?",
+      "gold": ["EgovSystemCntcController.selectConfirmSystemCntcDetail", "EgovSystemCntcServiceImpl.confirmSystemCntc", "SystemCntcDAO.confirmSystemCntc"],
+      "evidence": "selectConfirmSystemCntcDetail: cmd=Confirm이면 confirmSystemCntc → SystemCntcDAO.confirmSystemCntc가 COMTNSYSTEMCNTC.CONFM_AT를 UPDATE",
+      "split": "test",
+      "area": "ssi.syi",
+      "kind": "테이블"
+    },
+    {
+      "id": "H01",
+      "question": "세션이랑 쿠키는 뭐가 달라?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H02",
+      "question": "GET이랑 POST는 언제 뭘 써야 해?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H03",
+      "question": "DB 인덱스는 왜 거는 거야? 많이 걸면 안 좋아?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H04",
+      "question": "자바에서 문자열 비교할 때 등호 두 개로 하면 왜 안 돼?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H05",
+      "question": "인덱스를 많이 걸면 조회는 빨라지는데 저장은 왜 느려져?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H06",
+      "question": "DB 커넥션 풀은 왜 쓰는 거야?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H07",
+      "question": "운영 서버에 무중단으로 배포하려면 보통 어떻게 해?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
+    },
+    {
+      "id": "H08",
+      "question": "웹 서버랑 WAS는 왜 따로 두는 거야?",
+      "gold": [],
+      "evidence": "일반 개념 질문",
+      "split": "test",
+      "area": "general"
     }
   ]
 }
