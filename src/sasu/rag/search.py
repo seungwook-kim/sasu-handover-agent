@@ -13,6 +13,8 @@ import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
+from sasu.analysis.labels import Labels
+
 _GRAPH_BOOST = 0.25  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 더할지
 _CANDIDATES = 100  # 하이브리드에서 각 검색이 넘기는 후보 수
 _VECTOR_WEIGHT = 0.3  # 하이브리드: 정규화한 BM25 + 0.3 × 벡터 코사인 (평가로 정함)
@@ -87,8 +89,9 @@ class MethodIndex:
         self.embedder = embedder
         docs: dict[int, list[str]] = defaultdict(list)
         self.labels: dict[int, str] = {}
+        names = Labels(conn)
         for r in conn.execute(
-            """SELECT m.id, m.name, m.doc, m.body_tokens, c.name AS class_name, c.doc AS class_doc
+            """SELECT m.id, m.name, m.doc, m.body_tokens, m.class_id, c.name AS class_name, c.doc AS class_doc
                FROM methods m JOIN classes c ON c.id = m.class_id WHERE c.kind != 'interface'"""
         ):
             # VO의 getter/setter는 필드 이름만 담은 껍데기라 검색에서 뺀다
@@ -96,7 +99,10 @@ class MethodIndex:
                 continue
             self.labels[r["id"]] = f"{r['class_name']}.{r['name']}"
             words = " ".join(_CAMEL.findall(r["name"]))  # insertVcatnManage → insert Vcatn Manage
-            docs[r["id"]] += [r["name"], words, r["class_name"], r["doc"] or "", (r["class_doc"] or "")[:300]]
+            # 클래스 업무명(휴가관리)·메서드 한글 설명은 따로 넣는다. 클래스 주석 앞 300자에는
+            # 파일 이름·수정 이력만 있고 업무명이 빠지는 경우가 많다
+            docs[r["id"]] += [r["name"], words, r["class_name"], names.class_label(r["class_id"]) or "",
+                              names.method_label(r["id"]) or "", r["doc"] or "", (r["class_doc"] or "")[:300]]
         for r in conn.execute("SELECT method_id, text FROM notes"):
             docs[r["method_id"]].append(r["text"])
         for r in conn.execute("SELECT method_id, value FROM string_literals WHERE length(value) BETWEEN 2 AND 60"):
@@ -115,7 +121,7 @@ class MethodIndex:
         for mid, label in self.labels.items():
             by_label[label].append(mid)
         self.answer_terms: dict[int, set[str]] = defaultdict(set)
-        for r in conn.execute("SELECT target, question, answer FROM questions WHERE answer IS NOT NULL AND stale = 0"):
+        for r in conn.execute("SELECT target, question, answer FROM questions WHERE answer IS NOT NULL AND status != 'skipped' AND stale = 0"):
             for mid in by_label.get(r["target"] or "", []):
                 docs[mid].append(f"{r['question']} {r['answer']}")
                 self.answer_terms[mid] |= set(tokenize(f"{r['question']} {r['answer']}"))

@@ -124,7 +124,7 @@ def gather(conn: sqlite3.Connection, target: Target, repo: Path | None, cache_di
     # 5. 인수인계 답변 (이 메서드를 대상으로 한 질문, 또는 이 메서드 범위 안의 줄)
     for q in conn.execute(
         """SELECT id, question, answer, answered_by, answered_at FROM questions
-           WHERE answer IS NOT NULL AND (target = ? OR (file_path = ? AND line BETWEEN ? AND ?))""",
+           WHERE answer IS NOT NULL AND status != 'skipped' AND (target = ? OR (file_path = ? AND line BETWEEN ? AND ?))""",
         (target.label, target.path, target.line_start, target.line_end),
     ):
         who = f" ({q['answered_by']}, {q['answered_at'][:10]})" if q["answered_by"] else ""

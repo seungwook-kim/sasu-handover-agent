@@ -44,6 +44,19 @@ def save_answer(conn: sqlite3.Connection, question_id: int, text: str, by: str |
     return cur.rowcount > 0
 
 
+def skip_question(conn: sqlite3.Connection, question_id: int, reason: str, by: str | None) -> bool:
+    """묻지 않기로 한다 (전임자도 모름, 이미 아는 내용 등). 이유는 답변 칸에 남긴다.
+    되돌리려면 save_answer에 빈 답을 주면 다시 '물어볼 것'이 된다."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    cur = conn.execute(
+        """UPDATE questions SET answer = ?, answered_by = ?, status = 'skipped', answered_at = ?, updated_at = ?
+           WHERE id = ?""",
+        ((reason or "").strip() or None, (by or "").strip() or None, now, now, question_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def draft_message(conn: sqlite3.Connection, question_id: int) -> str | None:
     """전임자에게 보낼 질문 메시지. 바쁜 사람이 바로 보게 질문을 맨 위에 두고 위치·코드·묻는 이유를 담는다.
     "■ 질문"·"■ 코드:" 머리표는 웹 화면(코드 줄 넣기 토글)과 테스트가 쓴다."""

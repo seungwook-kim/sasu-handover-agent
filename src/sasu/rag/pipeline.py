@@ -2,12 +2,15 @@
 
 대상을 정하는 순서: 고른 후보(method_id) → 직접 적은 대상(Class.method, URL, 파일:줄)
 → 질문 안에 적힌 대상 → 검색 1위.
+검색 1위로 정했을 때만 auto=True다. 화면은 이때 답을 만들기 전에 대상이 맞는지 묻는다.
 """
 
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from sasu.analysis.labels import Labels
 from sasu.config import cache_dir, load_settings
 from sasu.handover import repo_of
 from sasu.rag.evidence import Evidence, Target, gather, resolve_target, target_of
@@ -20,6 +23,7 @@ class Candidate:
     score: float
     path: str
     line: int
+    label_ko: str | None = None  # 한글 설명 "휴가관리 · 휴가를 등록한다" (주석에 없으면 None)
 
 
 @dataclass
@@ -28,10 +32,11 @@ class Selection:
     candidates: list[Candidate] = field(default_factory=list)  # 검색으로 찾았을 때만
     how: str = ""  # 검색 방식 (BM25, 하이브리드)
     not_found: str | None = None  # 직접 적은 대상을 못 찾았을 때 그 대상
+    auto: bool = False  # 사람이 정하지 않고 검색 1위로 골랐다 (답 전에 확인받을 것)
 
 
 def choose_target(conn: sqlite3.Connection, question: str, target: str | None = None,
-                  method_id: int | None = None, top: int = 5) -> Selection:
+                  method_id: int | None = None, top: int = 6) -> Selection:
     if method_id is not None:
         return Selection(target_of(conn, method_id))
     if target and target.strip():
@@ -39,25 +44,40 @@ def choose_target(conn: sqlite3.Connection, question: str, target: str | None = 
         if not found:
             return Selection(None, not_found=target)
         # 같은 이름이 여러 곳에 있으면 (메서드 이름만 준 경우) 나머지를 다른 후보로 보여 준다
-        others = [Candidate(t.method_id, t.label, 0.0, t.path, t.line_start) for t in found[1:]]
-        return Selection(found[0], [Candidate(found[0].method_id, found[0].label, 0.0, found[0].path,
-                                              found[0].line_start)] + others if others else [], "같은 이름")
+        if len(found) == 1:
+            return Selection(found[0], [], "같은 이름")
+        names = Labels(conn)
+        same = [Candidate(t.method_id, t.label, 0.0, t.path, t.line_start, names.full(t.method_id)) for t in found]
+        return Selection(found[0], same, "같은 이름")
     found = resolve_target(conn, question)
     if found:
         return Selection(found[0])
     candidates, how = search_candidates(conn, question, top)
-    return Selection(target_of(conn, candidates[0].method_id) if candidates else None, candidates, how)
+    return Selection(target_of(conn, candidates[0].method_id) if candidates else None, candidates, how,
+                     auto=bool(candidates))
 
 
-def search_candidates(conn: sqlite3.Connection, question: str, top: int = 5) -> tuple[list[Candidate], str]:
+def search_candidates(conn: sqlite3.Connection, question: str, top: int = 6,
+                      pool: int = 30, per_class: int = 2) -> tuple[list[Candidate], str]:
+    """검색 상위 pool개에서 같은 클래스는 per_class개까지 top개.
+    같은 클래스 메서드만 다섯 개 나오면 1위가 엉뚱할 때 고쳐 고를 다른 코드가 없고,
+    클래스당 하나만 두면 같은 서비스의 2위 메서드(진짜 답)가 밀려나서 둘까지 둔다."""
     from sasu.rag.search import MethodIndex
 
     index = MethodIndex(conn, embedder_or_none())
     how = "BM25 + 벡터 하이브리드" if index.has_vectors else "BM25 (벡터 색인 없음: sasu embed)"
-    result = []
-    for hit in index.search(question, top=top):
+    names = Labels(conn)
+    result: list[Candidate] = []
+    per: Counter = Counter()
+    for hit in index.search(question, top=max(pool, top)):
+        class_id = names.class_of(hit.method_id)
+        if per[class_id] >= per_class:
+            continue
+        per[class_id] += 1
         t = target_of(conn, hit.method_id)
-        result.append(Candidate(hit.method_id, hit.label, hit.score, t.path, t.line_start))
+        result.append(Candidate(hit.method_id, hit.label, hit.score, t.path, t.line_start, names.full(hit.method_id)))
+        if len(result) >= top:
+            break
     return result, how
 
 

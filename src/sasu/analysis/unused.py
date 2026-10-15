@@ -55,7 +55,19 @@ def find_unused(conn: sqlite3.Connection) -> UnusedReport:
     return report
 
 
-def _broken_sql(conn: sqlite3.Connection) -> list[Finding]:
+@dataclass
+class BrokenCall:
+    """코드가 부르는데 Mapper에 없는 쿼리 하나."""
+
+    method_id: int
+    query_id: str
+    caller: str  # Class.method
+    location: str  # 파일:줄
+    hint: str
+    reachable: bool  # URL(또는 설정)에서 이어지는 메서드가 부른다 → 실행하면 오류
+
+
+def broken_sql_calls(conn: sqlite3.Connection) -> list[BrokenCall]:
     """DAO 안의 "네임스페이스.쿼리ID" 문자열인데 Mapper에 그런 쿼리가 없는 경우.
 
     네임스페이스가 실제로 있거나, 같은 쿼리 ID가 다른 네임스페이스에 있을 때만 본다.
@@ -73,7 +85,7 @@ def _broken_sql(conn: sqlite3.Connection) -> list[Finding]:
            WHERE c.stereotype = 'Repository' ORDER BY f.path, s.line"""
     ).fetchall()
     reachable = reachable_methods(conn)
-    findings = []
+    calls = []
     for r in rows:
         match = _QUERY_ID.match(r["value"])
         if match is None or r["value"] in full_ids:
@@ -86,19 +98,28 @@ def _broken_sql(conn: sqlite3.Connection) -> list[Finding]:
         if namespace not in namespaces and not similar:
             continue
         hint = f"비슷한 쿼리: {', '.join(similar)}" if similar else f"네임스페이스 {namespace}에 {short}가 없음"
-        caller = f"{r['class_name']}.{r['method_name']}"
-        if r["method_id"] in reachable:
-            reason = f"{caller}가 부르는 쿼리가 Mapper에 없음. URL에서 이어지는 경로가 있어 실행하면 오류가 날 수 있음"
+        calls.append(BrokenCall(
+            method_id=r["method_id"], query_id=r["value"], caller=f"{r['class_name']}.{r['method_name']}",
+            location=f"{r['path']}:{r['line']}", hint=hint, reachable=r["method_id"] in reachable,
+        ))
+    return calls
+
+
+def _broken_sql(conn: sqlite3.Connection) -> list[Finding]:
+    findings = []
+    for call in broken_sql_calls(conn):
+        if call.reachable:
+            reason = f"{call.caller}가 부르는 쿼리가 Mapper에 없음. URL에서 이어지는 경로가 있어 실행하면 오류가 날 수 있음"
         else:
-            reason = f"{caller}가 부르는 쿼리가 Mapper에 없음. 어떤 URL에서도 이어지지 않음 (죽은 코드)"
+            reason = f"{call.caller}가 부르는 쿼리가 Mapper에 없음. 어떤 URL에서도 이어지지 않음 (죽은 코드)"
         findings.append(
             Finding(
                 kind="broken_sql",
-                name=r["value"],
-                location=f"{r['path']}:{r['line']}",
+                name=call.query_id,
+                location=call.location,
                 confidence="높음",
                 reason=reason,
-                evidence=hint,
+                evidence=call.hint,
             )
         )
     # 실제로 호출되는 것부터

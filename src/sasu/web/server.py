@@ -17,7 +17,8 @@ from pydantic import BaseModel
 
 from sasu import db
 from sasu.config import active_db_path, current_project, list_projects, load_settings, set_current_project
-from sasu.handover import draft_message, meta, refresh_questions, repo_of, save_answer
+from sasu.analysis.labels import Labels
+from sasu.handover import draft_message, meta, refresh_questions, repo_of, save_answer, skip_question
 from sasu.rag.pipeline import choose_target, evidence_for
 from sasu.trace import TraceNode, coverage, find_urls, trace_url
 
@@ -44,6 +45,11 @@ _UNUSED_HELP = {
 
 class AnswerIn(BaseModel):
     answer: str
+    by: str | None = None
+
+
+class SkipIn(BaseModel):
+    reason: str = ""
     by: str | None = None
 
 
@@ -97,19 +103,27 @@ def create_app() -> FastAPI:
     def overview():
         from sasu.analysis.overview import build_overview
 
+        from sasu.analysis.unused import broken_sql_calls
+
         with _connect() as conn:
             ov = build_overview(conn)
             cov = coverage(conn)
+            names = Labels(conn)
             modules = [
-                {**asdict(m), "tables": [t for t, _ in m.tables.most_common(3)]}
+                {**asdict(m), "tables": [t for t, _ in m.tables.most_common(3)],
+                 "label": names.module_label(m.name), "labels": names.module_labels(m.name)}
                 for m in ov.modules if m.urls or m.statements
             ]
+            broken = broken_sql_calls(conn)
             return {
                 "build": ov.build,
                 "counts": {k: v for k, v in ov.counts.items() if v or k in ("URL", "SQL")},
                 "modules": modules,
                 "tables": [asdict(t) for t in ov.tables],
                 "coverage": asdict(cov),
+                # 없는 SQL 호출: URL에서 이어지면 실행 오류 위험, 아니면 죽은 코드
+                "broken_sql": {"reachable": sum(b.reachable for b in broken),
+                               "unreachable": sum(not b.reachable for b in broken)},
             }
 
     @app.get("/api/modules/{name}")
@@ -118,9 +132,12 @@ def create_app() -> FastAPI:
 
         with _connect() as conn:
             rows = module_urls(conn, name)
+            names = Labels(conn)
+            handlers = names.url_handlers()
+            urls = [{**asdict(r), "label": names.url_label(r.url, handlers)} for r in rows]
         if not rows:
             raise HTTPException(404, f"'{name}' 모듈의 URL이 없어요.")
-        return {"module": name, "urls": [asdict(r) for r in rows]}
+        return {"module": name, "urls": urls}
 
     @app.get("/api/behaviors/export")
     def behaviors_export(module: str | None = None):
@@ -128,6 +145,8 @@ def create_app() -> FastAPI:
         from sasu.analysis.behaviors import export_behaviors, list_behaviors
 
         name = current_project() or "project"
+        if module:  # 파일 이름에 모듈을 넣는다. 파일 이름에 못 쓰는 글자는 뺀다
+            name = f"{name}-{''.join(ch for ch in module if ch.isalnum() or ch in '._-')}"
         out = Path(tempfile.gettempdir()) / f"sasu-{name}-기존동작목록.xlsx"
         with _connect() as conn:
             export_behaviors(list_behaviors(conn, module), out)
@@ -139,21 +158,32 @@ def create_app() -> FastAPI:
     @app.get("/api/urls")
     def urls(q: str = "", limit: int = 30):
         with _connect() as conn:
+            names = Labels(conn)
             if q.strip():
-                found = find_urls(conn, q.strip())
+                found = _search_urls(conn, names, q.strip())
             else:
                 found = [r["url"] for r in conn.execute("SELECT DISTINCT url FROM url_mappings ORDER BY url")]
-        return {"total": len(found), "urls": found[:limit]}
+            handlers = names.url_handlers()
+            shown = found[:limit]
+            # labels: 돌려준 URL마다 처리 메서드의 한글 설명 (없으면 null)
+            return {"total": len(found), "urls": shown,
+                    "labels": {u: names.url_label(u, handlers) for u in shown}}
 
     @app.get("/api/trace")
     def trace(url: str, full: bool = False):
+        from sasu.analysis.unused import broken_sql_calls
+
         with _connect() as conn:
-            found = find_urls(conn, url)
+            names = Labels(conn)
+            found = _search_urls(conn, names, url)
             if url not in found:
                 if len(found) != 1:
                     return {"url": None, "candidates": found[:30]}
                 url = found[0]
-            return {"url": url, "tree": _node(trace_url(conn, url, full=full))}
+            broken: dict[int, list[str]] = {}
+            for b in broken_sql_calls(conn):
+                broken.setdefault(b.method_id, []).append(b.query_id)
+            return {"url": url, "tree": _node(trace_url(conn, url, full=full), names, broken)}
 
     @app.get("/api/code")
     def code(path: str, start: int = 1, end: int | None = None):
@@ -186,18 +216,24 @@ def create_app() -> FastAPI:
             rows = conn.execute(
                 "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id"
             ).fetchall()
-            items = [
-                {
+            names = Labels(conn)
+            items = []
+            for r in rows:
+                class_id, method_id = _question_target(conn, r["target"], r["file_path"])
+                module = names.module_of_class(class_id)
+                items.append({
                     "id": r["id"], "kind": r["kind"], "kind_label": KIND_LABEL.get(r["kind"], r["kind"]),
                     "priority": round(r["priority"], 1), "question": r["question"], "why": r["why"],
                     "file_path": r["file_path"], "line": r["line"], "target": r["target"], "code": r["code"],
                     "status": r["status"], "answer": r["answer"], "answered_by": r["answered_by"],
                     "answered_at": r["answered_at"],
-                }
-                for r in rows
-            ]
+                    # 한글 이름표 "휴가관리 · 휴가를 등록한다"와 대상 클래스의 모듈 (uss.ion, 그 업무명)
+                    "label": names.full(method_id) if method_id else names.class_label(class_id),
+                    "module": module, "module_label": names.module_label(module),
+                })
         answered = sum(1 for q in items if q["status"] == "answered")
-        return {"total": len(items), "answered": answered, "kinds": KIND_LABEL, "items": items}
+        skipped = sum(1 for q in items if q["status"] == "skipped")
+        return {"total": len(items), "answered": answered, "skipped": skipped, "kinds": KIND_LABEL, "items": items}
 
     @app.post("/api/questions/refresh")
     def questions_refresh():
@@ -214,6 +250,16 @@ def create_app() -> FastAPI:
                              (question_id,)).fetchone()
         return dict(r)
 
+    @app.post("/api/questions/{question_id}/skip")
+    def questions_skip(question_id: int, body: SkipIn):
+        """묻지 않기로 한다. 이유는 답변 칸에 남는다. 되돌리기는 answer에 빈 답."""
+        with _connect() as conn:
+            if not skip_question(conn, question_id, body.reason, body.by):
+                raise HTTPException(404, f"Q{question_id} 질문이 없어요.")
+            r = conn.execute("SELECT status, answer, answered_by, answered_at FROM questions WHERE id = ?",
+                             (question_id,)).fetchone()
+        return dict(r)
+
     @app.get("/api/questions/{question_id}/draft")
     def questions_draft(question_id: int):
         with _connect() as conn:
@@ -223,19 +269,26 @@ def create_app() -> FastAPI:
         return {"message": message}
 
     @app.get("/api/questions/export")
-    def questions_export():
+    def questions_export(ids: str | None = None):
+        """ids=1,2,3이면 그 질문만 (화면에서 거른 목록 그대로)."""
         from sasu.handover_sheet import export_sheet
 
+        chosen = None
+        if ids is not None and ids.strip():
+            try:
+                chosen = [int(x.strip().lstrip("Qq")) for x in ids.split(",") if x.strip()]
+            except ValueError:
+                raise HTTPException(400, "ids는 쉼표로 나눈 질문 번호예요 (예: 1,2,3).")
         name = current_project() or "project"
         out = Path(tempfile.gettempdir()) / f"sasu-{name}-인수인계질문.xlsx"
         with _connect() as conn:
-            export_sheet(conn, out)
+            export_sheet(conn, out, ids=chosen)
         return FileResponse(out, filename=f"{name}-인수인계질문.xlsx",
                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     @app.post("/api/questions/import")
     async def questions_import(file: UploadFile = File(...)):
-        from sasu.handover_sheet import import_sheet
+        from sasu.handover_sheet import import_sheet_result
 
         if not (file.filename or "").lower().endswith(".xlsx"):
             raise HTTPException(400, "엑셀(.xlsx) 질문지를 올려 주세요.")
@@ -244,10 +297,11 @@ def create_app() -> FastAPI:
             path.write_bytes(await file.read())
             with _connect() as conn:
                 try:
-                    saved, missing = import_sheet(conn, path)
+                    result = import_sheet_result(conn, path)
                 except Exception as e:  # 형식이 다른 엑셀
                     raise HTTPException(400, f"질문지를 읽지 못했어요: {e}")
-        return {"saved": saved, "missing": missing}
+        # saved: 실제로 바뀐 행, unchanged: 이미 같은 행, missing: 질문을 못 찾은 행
+        return {"saved": result.saved, "unchanged": result.unchanged, "missing": result.missing}
 
     # ── 물어보기 (RAG) ───────────────────────────────────────
 
@@ -259,8 +313,10 @@ def create_app() -> FastAPI:
             chosen = sel.target
             evidence = evidence_for(conn, chosen, body.use_git) if chosen else []
             return {
+                # auto: 사람이 정하지 않고 검색 1위로 골랐다 → 화면이 답 전에 대상이 맞는지 묻는다
+                "auto": sel.auto,
                 "candidates": [asdict(c) for c in sel.candidates],
-                "target": asdict(chosen) if chosen else None,
+                "target": {**asdict(chosen), "label_ko": Labels(conn).full(chosen.method_id)} if chosen else None,
                 "evidence": [asdict(e) for e in evidence],
             }
 
@@ -346,9 +402,43 @@ class _connect:
         self.conn.close()
 
 
-def _node(node: TraceNode) -> dict:
-    return {
+def _node(node: TraceNode, names: Labels | None = None, broken: dict[int, list[str]] | None = None) -> dict:
+    data = {
         "kind": node.kind, "label": node.label, "location": node.location, "detail": node.detail,
         "note": node.note, "count": node.count, "repeated": node.repeated,
-        "children": [_node(c) for c in node.children],
+        "children": [_node(c, names, broken) for c in node.children],
     }
+    if node.kind == "method":
+        # label은 이미 Class.method라서 한글 설명은 label_ko로 더한다
+        data["label_ko"] = names.method_label(node.method_id) if names else None
+        data["broken"] = (broken or {}).get(node.method_id, [])  # 이 메서드가 부르는데 Mapper에 없는 쿼리 ID
+    elif node.kind == "statement":
+        data["estimated"] = node.note is not None  # 동적 ID·메서드 이름 등으로 추정한 연결
+    return data
+
+
+def _search_urls(conn: sqlite3.Connection, names: Labels, query: str) -> list[str]:
+    """URL 글자로 찾고, 한글이 있으면 처리 메서드·클래스의 한글 설명으로도 찾는다."""
+    found = find_urls(conn, query)
+    return found + [u for u in names.search_urls(query) if u not in found]
+
+
+def _question_target(conn: sqlite3.Connection, target: str | None,
+                     file_path: str | None) -> tuple[int | None, int | None]:
+    """질문 대상 "Class.method"의 (클래스 id, 메서드 id). 쿼리 ID처럼 코드에 없으면 (None, None)."""
+    if not target or "." not in target:
+        return None, None
+    cls, method = target.rsplit(".", 1)
+    row = conn.execute(
+        """SELECT c.id AS class_id, m.id AS method_id FROM methods m JOIN classes c ON c.id = m.class_id
+           JOIN files f ON f.id = c.file_id WHERE c.name = ? AND m.name = ?
+           ORDER BY f.path = ? DESC, m.id LIMIT 1""",
+        (cls, method, file_path or ""),
+    ).fetchone()
+    if row:
+        return row["class_id"], row["method_id"]
+    row = conn.execute(
+        "SELECT c.id FROM classes c JOIN files f ON f.id = c.file_id WHERE c.name = ? ORDER BY f.path = ? DESC LIMIT 1",
+        (cls, file_path or ""),
+    ).fetchone()
+    return (row["id"], None) if row else (None, None)
