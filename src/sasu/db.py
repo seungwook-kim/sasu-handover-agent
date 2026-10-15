@@ -214,6 +214,14 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: Path) -> sqlite3.Connection:
+    """평가처럼 읽기만 할 때. 스키마를 맞추거나 지우지 않고, 쓰기도 막는다."""
+    conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    _load_vector_extension(conn)
+    return conn
+
+
 def _load_vector_extension(conn: sqlite3.Connection) -> None:
     """벡터 색인(vec_methods, sqlite-vec 가상 테이블)을 읽고 지우려면 확장이 있어야 한다."""
     from sasu.rag.vectors import load_extension

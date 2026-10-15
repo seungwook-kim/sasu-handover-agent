@@ -405,7 +405,11 @@ def ask(
         found_by = "같은 이름의 메서드 (Service 우선)" if sel.how == "같은 이름" else f"질문으로 찾은 후보 · {sel.how}"
         console.print(f"[dim]{found_by} (다른 것이면 --target에 Class.method로 지정):[/dim]")
         for i, c in enumerate(sel.candidates, 1):
-            console.print(f"[dim]  {i}. {c.label} ({c.score})[/dim]")
+            console.print(f"[dim]  {i}. {c.label} ({c.score}){'  ' + c.why if c.why else ''}[/dim]")
+        if sel.expanded_terms:
+            console.print(f"[dim]이렇게 넓혀 찾았어요: {', '.join(sel.expanded_terms)}[/dim]")
+        if sel.low_confidence:
+            console.print("[yellow]질문과 딱 맞는 코드를 못 찾았어요. 후보가 맞는지 보고, 다르면 --target으로 지정하세요.[/yellow]")
     chosen = sel.target
     console.print(f"\n[bold]대상[/bold] {chosen.label}  [dim]{_short(chosen.path)}:{chosen.line_start}[/dim]")
 
@@ -533,6 +537,61 @@ def eval_search(
     console.print(table)
     for query, gold, rank in r.examples:
         console.print(f"• {query}\n  [dim]정답 {gold} → {'순위 ' + str(rank) if rank else '10위 밖'}[/dim]")
+
+
+@app.command("eval-everyday")
+def eval_everyday(
+    set_path: Path = typer.Option(None, "--set", help="평가 세트 JSON (기본: 내장 everyday.json, eGovFrame 공통컴포넌트)"),
+    db_path: Path = typer.Option(None, "--db", help="분석 파일 (기본: 세트의 project 이름으로 찾음)"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="LLM 넓히기 없이 (a)만"),
+    no_cache: bool = typer.Option(False, "--no-cache", help="넓히기 캐시를 쓰지 않고 LLM을 다시 불러 지연을 잰다"),
+    out: Path = typer.Option(None, "--out", help="질문별 결과 JSON"),
+) -> None:
+    """일상어 질문으로 묻기 대상 후보를 잰다: 상위 6 정답률, 일반 질문 low_confidence 정확도, 지연.
+    (a) 지금 검색 (b) + LLM 질문 넓히기. 분석 파일은 읽기 전용으로 연다."""
+    import json
+
+    from sasu.evaluation.everyday_eval import load_set, run_variant, to_json
+    from sasu.rag.expand import QueryExpander, make_expand_client
+    from sasu.rag.pipeline import embedder_or_none
+    from sasu.rag.search import MethodIndex
+
+    data = load_set(set_path)
+    path = db_path or project_db(data["project"])
+    if not path.exists():
+        console.print(f"[red]분석 파일이 없어요: {path} (먼저 sasu index)[/red]")
+        raise typer.Exit(1)
+    conn = db.connect_readonly(path)
+    index = MethodIndex(conn, embedder_or_none())
+    questions = data["questions"]
+    variants = [run_variant(conn, "(a) 지금 검색", questions, index, None)]
+    if not no_llm:
+        expander = QueryExpander(make_expand_client(load_settings()), use_cache=not no_cache)
+        if not expander.available:
+            console.print("[yellow]LLM이 없어 (b)는 건너뜁니다 (SASU_LLM_PROVIDER).[/yellow]")
+        else:
+            with console.status("LLM으로 질문을 넓혀 검색하는 중…"):
+                variants.append(run_variant(conn, "(b) + LLM 질문 넓히기", questions, index, expander))
+    n_spec = sum(1 for q in questions if q.get("gold"))
+    console.print(f"질문 {len(questions)}개 (정답 있는 {n_spec} · 일반 개념 {len(questions) - n_spec}) · "
+                  f"{'벡터 하이브리드' if index.has_vectors else 'BM25'}")
+    table = Table(title="일상어 질문 검색", title_justify="left")
+    for col in ("검색", "상위 6 정답률", "1위 정답률", "일반 질문 low_conf 정확도", "정답 있는 질문을 low_conf로",
+                "평균 지연(초)", "넓히기 LLM(초)"):
+        table.add_column(col, justify="left" if col == "검색" else "right")
+    for v in variants:
+        table.add_row(v.name, f"{v.hit_rate:.0%}", f"{v.top1_rate:.0%}", f"{v.low_conf_accuracy:.0%}",
+                      f"{v.false_low_conf:.0%}", f"{v.avg_seconds:.2f}", f"{v.avg_expand_seconds:.2f}")
+    console.print(table)
+    last = variants[-1]
+    for c in last.cases:
+        mark = f"{c.rank}위" if c.rank else ("low_conf" if not c.gold and c.low_confidence else "놓침")
+        terms = f" [dim]넓힘: {', '.join(c.expanded_terms)}[/dim]" if c.expanded_terms else ""
+        console.print(f"• {c.id} {c.question} → {mark}{' (low_conf)' if c.low_confidence and c.gold else ''}{terms}")
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(to_json(variants), ensure_ascii=False, indent=1), encoding="utf-8")
+        console.print(f"[dim]질문별 결과: {out}[/dim]")
 
 
 @app.command("eval-why")

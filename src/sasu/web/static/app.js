@@ -818,6 +818,7 @@ const Q = {
   polling: false,
   justSaved: new Set(),  // 방금 저장한 질문: 미답변 목록에서도 잠시 남겨 [이 코드로 묻기]를 보인다
   open: null,            // 펼친 단위 key ("q:4" 또는 "t:대상")
+  selected: new Set(),   // 골라 둔 질문 id (내려받기용, 검색·필터를 바꿔도 남는다)
 };
 let qPromise = null;
 
@@ -838,6 +839,9 @@ function setQuestions(d) {
   for (const b of [TOP, NEXT]) {
     if (d.items.length > b && d.items[b - 1].priority === d.items[b].priority) Q.ties.add(d.items[b].priority);
   }
+  // 질문을 다시 만들어 사라진 질문은 고른 목록에서도 뺀다
+  const ids = new Set(d.items.map((q) => q.id));
+  for (const id of [...Q.selected]) if (!ids.has(id)) Q.selected.delete(id);
   recount();
 }
 
@@ -990,6 +994,7 @@ function renderQuestions(opts = {}) {
   exp.href = items.length ? `/api/questions/export?ids=${items.map((q) => q.id).join(",")}` : "/api/questions/export";
   exp.setAttribute("aria-disabled", String(!items.length));
   $("#q-export-visible-text").textContent = `보이는 ${fmt(items.length)}개 질문지 내려받기`;
+  paintSelection(items);
   if (Q.lastCount !== items.length) {
     Q.lastCount = items.length;
     announce(items.length ? `질문 ${items.length}개` : Q.search.trim() ? noMatch(Q.search.trim(), "질문이") : "질문 0개");
@@ -1085,10 +1090,12 @@ function renderUnit(u, sectionTier) {
   const toggle = (e) => { if (e.detail > 1) return; toggleUnit(u.key, e.currentTarget); };
   if (u.items.length > 1) {
     const short = u.target.split(".").pop();
-    box.append(h("button", { class: "qgroup-head", type: "button", "aria-expanded": String(open), "data-key": u.key, onclick: toggle,
-      title: u.target },
-    icon(open ? "chevron-down" : "chevron-right", "i14"), h("span", { class: "name" }, short), h("span", { class: "muted" }, `· ${u.items.length}`),
-    h("span", { class: "muted xs grow" }, u.target)));
+    box.append(h("div", { class: "qgroup-line" },
+      selBox(u.items.map((q) => q.id), `${short} 묶음 ${u.items.length}개 모두 고르기`),
+      h("button", { class: "qgroup-head", type: "button", "aria-expanded": String(open), "data-key": u.key, onclick: toggle,
+        title: u.target },
+      icon(open ? "chevron-down" : "chevron-right", "i14"), h("span", { class: "name" }, short), h("span", { class: "muted" }, `· ${u.items.length}`),
+      h("span", { class: "muted xs grow" }, u.target))));
     for (const q of u.items) box.append(qRow(q, u, sectionTier, open, toggle, true));
   } else box.append(qRow(u.items[0], u, sectionTier, open, toggle, false));
   if (open) box.append(unitBody(u));
@@ -1102,8 +1109,8 @@ function qRow(q, u, sectionTier, open, toggle, inGroup) {
   if (Q.ties.has(q.priority)) tags.push(h("span", { class: "chip", title: "같은 점수로 순위 경계가 갈렸어요" }, "동점"));
   if (inGroup && tierOf(rank) !== sectionTier) tags.push(h("span", { class: "chip", title: `우선 ${rank + 1}위` }, TIER_SHORT[tierOf(rank)]));
   const row = h("div", { class: "row", style: "gap:0;flex-wrap:nowrap" },
-    h("button", { class: "qrow", type: "button", "aria-expanded": String(open), "data-key": u.key, "data-qid": q.id, onclick: toggle,
-      style: inGroup ? "padding-left:28px" : null },
+    selBox([q.id], `Q${q.id} 고르기`, inGroup),
+    h("button", { class: "qrow", type: "button", "aria-expanded": String(open), "data-key": u.key, "data-qid": q.id, onclick: toggle },
     h("span", { class: "qid" }, `Q${q.id}`),
     h("span", { class: "chip kindc" }, icon(KIND_ICON[q.kind] || "info", "i12"), q.kind_label),
     h("span", { class: "qt", title: q.question }, q.question),
@@ -1115,6 +1122,48 @@ function qRow(q, u, sectionTier, open, toggle, inGroup) {
       ? h("button", { class: "btn sm", type: "button", style: "margin-right:8px", onclick: () => askAbout(q) }, icon("message-square-quote", "i14"), "이 코드로 묻기")
       : null);
   return row;
+}
+
+// ── 질문 골라 내려받기: 행마다 고르기 칸, 묶음 머리 칸 = 묶음 전체 ──
+function selBox(ids, label, sub) {
+  const input = h("input", { type: "checkbox", "data-ids": ids.join(","), "aria-label": label });
+  paintSelBox(input);
+  input.addEventListener("change", () => {
+    ids.forEach((id) => (input.checked ? Q.selected.add(id) : Q.selected.delete(id)));
+    paintSelection();
+    announce(Q.selected.size ? `질문 ${Q.selected.size}개 골랐어요` : "고른 질문이 없어요");
+  });
+  return h("label", { class: sub ? "qsel sub" : "qsel", title: label }, input);
+}
+
+function paintSelBox(input) {
+  const ids = input.dataset.ids.split(",").map(Number);
+  const n = ids.filter((id) => Q.selected.has(id)).length;
+  input.checked = n > 0 && n === ids.length;
+  input.indeterminate = n > 0 && n < ids.length;
+}
+
+// 고르기 칸 표시와 툴바의 [선택한 n개 내려받기]·[선택 해제]를 맞춘다 (목록은 다시 그리지 않음 → 포커스 그대로)
+function paintSelection(items) {
+  document.querySelectorAll("#q-list .qsel input").forEach(paintSelBox);
+  const bar = $("#q-selbar");
+  const n = Q.selected.size;
+  bar.classList.toggle("hidden", !n);
+  if (!n) return;
+  const ids = [...Q.selected].sort((a, b) => (Q.rank.get(a) ?? 0) - (Q.rank.get(b) ?? 0));
+  const link = $("#q-export-selected");
+  link.href = `/api/questions/export?ids=${ids.join(",")}`;
+  $("#q-export-selected-text").textContent = `선택한 ${fmt(n)}개 내려받기`;
+  const shown = new Set((items || filteredItems()).map((q) => q.id));
+  const away = ids.filter((id) => !shown.has(id)).length;
+  link.title = away ? `고른 질문 ${n}개를 엑셀로 받아요 (지금 목록에 안 보이는 ${away}개 포함)` : `고른 질문 ${n}개만 엑셀로 받아요`;
+}
+
+function clearSelection() {
+  Q.selected.clear();
+  paintSelection();
+  toast("고른 질문을 모두 해제했어요");
+  $("#q-search").focus();
 }
 
 function toggleUnit(key, el) {
@@ -1347,11 +1396,38 @@ function clearFilters() {
   renderQuestions();
 }
 
+// '묻는 이유'의 코드 조각을 코드 없는 말로 바꾼다 (메시지의 '코드 한 줄 넣기'가 꺼져 있을 때)
+//   "조건: (sTemp.equals("09")) (386번째 줄). …" → "조건 값 '09'에 따라 분기 (386번째 줄). …"
+// 값은 조건문 안의 글자 값("09", 'K'), 없으면 case 숫자, 그래도 없으면 질문 문장의 "값이 '…'일 때"에서 가져온다
+function plainWhy(why, question) {
+  return String(why).replace(/조건: (.+?) \((\d+)번째 줄\)/, (all, cond, line) => {
+    let vals = [...cond.matchAll(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)+)'/g)].map((m) => (m[1] !== undefined ? m[1] : m[2]));
+    if (!vals.length) {
+      const c = /^case\s+([\w.-]+)/.exec(cond.trim());
+      if (c) vals = [c[1]];
+    }
+    if (!vals.length && question) {
+      const q = /값이 (.+?)일 때/.exec(question);
+      if (q) vals = [...q[1].matchAll(/'+([^',]+?)'+/g)].map((m) => m[1]);
+    }
+    vals = [...new Set(vals)].slice(0, 5);
+    return vals.length
+      ? `조건 값 ${vals.map((v) => `'${v}'`).join(", ")}에 따라 분기 (${line}번째 줄)`
+      : `값을 비교하는 조건으로 분기 (${line}번째 줄)`;
+  });
+}
+
 // 메시지 만들기: 보내는 사람([이름])·받는 사람을 채우고 본문은 고쳐 쓸 수 있다. 복사는 고친 글
 function draftModal(title, message) {
   const lines = message.split("\n");
   const codeIdx = lines.findIndex((l) => l.startsWith("■ 코드:"));
   const codeLine = codeIdx >= 0 ? lines[codeIdx] : null;
+  // '묻는 이유' 줄: 원문(코드 포함)과 코드 없는 말
+  const whyIdx = lines.findIndex((l) => l.startsWith("■ 묻는 이유:"));
+  const qLine = lines.find((l) => l.startsWith("■ 질문:")) || "";
+  const whyRaw = whyIdx >= 0 ? lines[whyIdx] : null;
+  const whyPlain = whyRaw ? `■ 묻는 이유: ${plainWhy(whyRaw.slice("■ 묻는 이유:".length).trim(), qLine)}` : null;
+  const whyHasCode = whyRaw !== null && whyPlain !== whyRaw;
   const st = {
     name: store("sasu-sender-name") || "",
     recipient: store("sasu-recipient") || "전임자",
@@ -1365,7 +1441,8 @@ function draftModal(title, message) {
   const greet = (r) => (r.trim() ? `${r.trim().replace(/님$/, "")}님, 안녕하세요. ` : "안녕하세요, ");
   // 처음 글: 서버 초안에서 [이름]·인사·코드 줄을 지금 값으로 바꾼다
   const compose = () => {
-    let out = lines.filter((l, i) => i !== codeIdx || st.withCode).join("\n");
+    let out = lines.filter((l, i) => i !== codeIdx || st.withCode)
+      .map((l) => (l === whyRaw && !st.withCode ? whyPlain : l)).join("\n");
     out = out.replace("[이름]", nameOf(st.name));
     out = out.replace(/^안녕하세요, /, greet(st.recipient));
     return out;
@@ -1385,13 +1462,16 @@ function draftModal(title, message) {
     store("sasu-recipient", st.recipient.trim());
     if (body.value.startsWith(before)) body.value = greet(st.recipient) + body.value.slice(before.length);
   });
+  // 켜면 원문(코드 줄 + '묻는 이유'의 조건문), 끄면 코드 줄을 빼고 '묻는 이유'를 코드 없는 말로
   const toggleCode = (on) => {
     st.withCode = on;
-    const cur = body.value.split("\n");
-    if (!on) { body.value = cur.filter((l) => !l.startsWith("■ 코드:")).join("\n"); return; }
-    if (cur.some((l) => l.startsWith("■ 코드:"))) return;
-    const at = cur.findIndex((l) => l.startsWith("■ 위치:"));
-    cur.splice(at >= 0 ? at + 1 : cur.length, 0, codeLine);
+    let cur = body.value.split("\n");
+    if (whyHasCode) cur = cur.map((l) => (on && l === whyPlain ? whyRaw : !on && l === whyRaw ? whyPlain : l));
+    if (!on) cur = cur.filter((l) => !l.startsWith("■ 코드:"));
+    else if (codeLine && !cur.some((l) => l.startsWith("■ 코드:"))) {
+      const at = cur.findIndex((l) => l.startsWith("■ 위치:"));
+      cur.splice(at >= 0 ? at + 1 : cur.length, 0, codeLine);
+    }
     body.value = cur.join("\n");
   };
   modal(title, [
@@ -1399,7 +1479,8 @@ function draftModal(title, message) {
     h("div", { class: "draft-fields" },
       h("label", { for: "draft-name" }, "보내는 사람"), nameIn,
       h("label", { for: "draft-rec" }, "받는 사람"), recIn),
-    codeLine ? h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => toggleCode(e.target.checked) }), "코드 한 줄 넣기 (반출 규정 확인 후)") : null,
+    codeLine || whyHasCode ? h("label", { class: "check" }, h("input", { type: "checkbox", onchange: (e) => toggleCode(e.target.checked) }), "코드 한 줄 넣기 (반출 규정 확인 후)") : null,
+    whyHasCode ? h("p", { class: "draft-why-note" }, "꺼 두면 '묻는 이유'의 조건문도 코드 없이 바꿔 적어요. 켜면 원문 그대로예요.") : null,
     h("label", { for: "draft-body", class: "visually-hidden" }, "메시지 본문"),
     body,
   ].filter(Boolean), (close) => [
@@ -1462,6 +1543,7 @@ $("#q-search").addEventListener("keydown", (e) => {
 $("#q-export-visible").addEventListener("click", (e) => {
   if (e.currentTarget.getAttribute("aria-disabled") === "true") { e.preventDefault(); toast("보이는 질문이 없어요"); }
 });
+$("#q-select-clear").addEventListener("click", clearSelection);
 $("#q-import").addEventListener("click", () => $("#q-import-file").click());
 $("#q-import-file").addEventListener("change", async (e) => {
   const file = e.target.files[0];
@@ -2064,22 +2146,38 @@ function candLabel(c) {
   return ko ? [h("span", { class: "cko" }, ko), " ", h("span", { class: "mono" }, c.label)] : h("span", { class: "mono" }, c.label);
 }
 
+// 서버가 주는 후보 고른 이유(C1 candidates[].why). 없으면 null — 화면은 없을 때도 그대로
+const whyOf = (c) => (c && typeof c.why === "string" && c.why.trim() ? c.why.trim() : null);
+
 function confirmCard(req, ev, cands, go) {
   const t = ev.target;
   const ko = koOf(t);
   const others = cands.filter((c) => c.method_id !== t.method_id);
+  const tWhy = whyOf(t) || whyOf(cands.find((c) => c.method_id === t.method_id));
+  // C1: 1위 후보가 질문과 약하게만 맞으면 경고를 크게, [이 코드로 묻기]는 보조 버튼으로
+  const weak = ev.low_confidence === true;
+  const terms = Array.isArray(ev.expanded_terms) ? ev.expanded_terms.filter((x) => typeof x === "string" && x.trim()) : [];
+  const withWhy = others.some((c) => whyOf(c));
   return h("div", { class: "card confirm-card" },
     h("h3", { class: "confirm-head", tabindex: "-1" }, icon("search", "i20"), "이 코드에 대해 물을까요?"),
+    weak ? h("div", { class: "notice warn big", role: "note" }, icon("triangle-alert"), h("div", {},
+      h("b", {}, "질문과 딱 맞는 코드를 못 찾았어요 — 아래 후보나 화면(URL)으로 직접 골라 주세요"),
+      h("div", { class: "small" }, "아래 코드는 질문 낱말과 조금만 맞아요. 그대로 물으면 질문과 다른 코드를 기준으로 답할 수 있어요."))) : null,
     h("p", { class: "muted small" }, "질문 낱말로 사수가 고른 코드예요. 답은 질문 전체가 아니라 이 코드를 기준으로 만들어요."),
+    terms.length ? h("p", { class: "expanded-terms" }, "이렇게 넓혀 찾았어요: ",
+      h("span", { class: "mono" }, terms.slice(0, 12).join(", ")), terms.length > 12 ? ` 외 ${terms.length - 12}개` : null) : null,
     h("div", { class: "confirm-target" },
       ko ? h("div", { class: "ko-big" }, ko) : h("div", { class: "muted xs" }, "한글 설명 없음"),
       h("div", { class: "mono" }, t.label),
+      tWhy ? h("span", { class: "cwhy" }, `고른 이유: ${tWhy}`) : null,
       locLink(`${t.path}:${t.line_start}-${t.line_end}`, `${t.path}:${t.line_start}`, `코드 보기: ${t.path}:${t.line_start}`)),
     h("div", { class: "row" },
-      h("button", { class: "btn primary lg", type: "button", onclick: go }, icon("message-square-quote"), "이 코드로 묻기")),
-    others.length ? h("div", { class: "candidates" }, h("span", { class: "muted" }, "다른 후보:"),
-      others.map((c) => h("button", { type: "button", title: `${c.path}:${c.line}`,
-        onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands) }, candLabel(c)))) : null,
+      h("button", { class: weak ? "btn" : "btn primary lg", type: "button", onclick: go }, icon("message-square-quote"),
+        "이 코드로 묻기")),
+    others.length ? h("div", { class: `candidates${withWhy ? " with-why" : ""}` }, h("span", { class: "muted" }, "다른 후보:"),
+      others.map((c) => h("button", { type: "button", title: [`${c.path}:${c.line}`, whyOf(c)].filter(Boolean).join("\n"),
+        onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands) },
+      candLabel(c), whyOf(c) ? h("span", { class: "cwhy" }, whyOf(c)) : null))) : null,
     urlPicker(req),
     h("p", { class: "muted xs", style: "margin:4px 0 0" }, "다른 코드면 후보에서 고르거나, 화면(URL)으로 찾거나, ",
       h("button", { class: "btn-reset linkish", type: "button", onclick: () => $("#ask-target").focus() }, "'대상 코드' 칸"),
@@ -2173,7 +2271,7 @@ async function answerPhase(run, req, body, ev, cands) {
   setKids(out,
     cands && cands.length ? h("div", { class: "candidates" }, h("span", { class: "muted" }, "찾은 코드 (다른 코드면 고르세요):"),
       cands.map((c) => h("button", {
-        type: "button", "aria-pressed": String(c.method_id === t.method_id), title: `${c.path}:${c.line}`,
+        type: "button", "aria-pressed": String(c.method_id === t.method_id), title: [`${c.path}:${c.line}`, whyOf(c)].filter(Boolean).join("\n"),
         onclick: () => runAsk({ question: req.question, method_id: c.method_id }, cands),
       }, candLabel(c)))) : null,
     h("div", { class: "target-line" }, icon("info", "i14"),

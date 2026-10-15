@@ -647,6 +647,35 @@ ul.cand-urls .ko { display: inline; margin-left: 8px; }
 .url-pick { display: grid; gap: 4px; }
 .url-pick label { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; color: var(--text); }
 
+/* 질문 골라 내려받기: 행 앞 고르기 칸(누름 영역 32×36), 묶음 머리 칸 = 묶음 전체 */
+.qsel { flex: none; display: flex; align-items: center; justify-content: center; width: 36px; min-height: 36px; padding-left: 8px; cursor: pointer; }
+.qsel input[type="checkbox"] { margin: 0; }
+.qsel.sub { width: 60px; padding-left: 32px; }
+.qunit .qrow { padding-left: 4px; }
+.qgroup-line { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.qgroup-line .qsel { min-height: 32px; }
+.qgroup-line .qgroup-head { border-bottom: 0; padding-left: 4px; }
+.qbody { padding-left: 90px; }
+.selbar { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* 메시지 창: 작은 화면(1280×585)에서도 [메시지 복사]·[닫기]가 창 아래에 늘 보이게 */
+.modal .actions { position: sticky; bottom: -16px; z-index: 1; margin: 0 -20px -16px; padding: 12px 20px 16px; background: var(--panel); border-top: 1px solid var(--line); }
+@media (max-height: 720px) {
+  textarea.draft-body { min-height: 160px; }
+  .modal { max-height: calc(100vh - 32px); }
+}
+.draft-why-note { margin: 0; font-size: var(--fs-xs); color: var(--text); }
+
+/* 묻기 확인 카드: 후보를 고른 이유·확신 낮음·넓혀 찾은 말 */
+.notice.warn { border-left-color: var(--warn); }
+.notice.warn > .icon { color: var(--warn); }
+.notice.big b { font-size: var(--fs-lg); }
+.confirm-target .cwhy, .candidates .cwhy { display: block; font-size: var(--fs-xs); color: var(--text); font-weight: 400; }
+.candidates.with-why { display: grid; gap: 6px; justify-items: start; }
+.candidates.with-why button { text-align: left; padding: 4px 8px; max-width: 100%; }
+.expanded-terms { margin: 0; font-size: var(--fs-xs); color: var(--text); }
+.expanded-terms .mono { font-family: var(--mono); }
+
 /* ── 8. 반응형 ────────────────────────────────── */
 @media (min-width: 1280px) {
   .ask-grid { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }

@@ -109,6 +109,8 @@ def test_ask_evidence_then_answer(client):
     ev = client.post("/api/ask/evidence", json=body).json()
     assert ev["target"]["label"] == "orders.read_order"
     assert ev["evidence"][0]["id"] == "E1"
+    # 대상을 직접 정하면 검색하지 않으니 확신 경고·넓힌 말이 없다
+    assert ev["low_confidence"] is False and ev["expanded_terms"] == []
     ans = client.post("/api/ask/answer", json=body).json()
     assert ans["sentences"][0]["label"] == "사실" and ans["sentences"][0]["citations"] == ["E1"]
 
@@ -132,3 +134,18 @@ def test_behaviors_export(client):
     assert res.status_code == 200
     ws = load_workbook(io.BytesIO(res.content)).active
     assert ws.max_row == 3 and ws.cell(row=1, column=3).value == "URL"  # FastAPI 예제의 URL 2개
+
+
+def test_ask_evidence_free_question_has_why_and_confidence(client, monkeypatch):
+    class FakeExpander:
+        last_seconds = 0.0
+
+        def expand(self, conn, question):
+            return ["order", "read"]
+
+    monkeypatch.setattr("sasu.rag.expand.make_expander", lambda settings=None: FakeExpander())
+    ev = client.post("/api/ask/evidence", json={"question": "주문 조회는 어떻게 해?", "use_git": False}).json()
+    assert ev["auto"] is True and ev["candidates"]
+    assert isinstance(ev["low_confidence"], bool)
+    assert ev["expanded_terms"] == ["order", "read"]
+    assert all(c["why"] for c in ev["candidates"])

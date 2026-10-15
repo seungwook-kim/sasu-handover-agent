@@ -21,6 +21,7 @@ _VECTOR_WEIGHT = 0.3  # 하이브리드: 정규화한 BM25 + 0.3 × 벡터 코�
 _MAX_DOC_CHARS = 1500  # 조각 하나의 최대 길이 (임베딩 모델 입력 한도 고려)
 _ANSWER_BOOST = 0.5  # 인수인계 답변이 질문과 맞으면 1위 점수의 최대 50%를 더한다
 _ANSWER_MIN_COVERAGE = 0.34  # 질문 단어(idf 가중) 중 답변에 있는 비율이 이 이상일 때만
+_EXTRA_WEIGHT = 0.7  # LLM이 넓힌 말의 가중치 (질문 낱말 1보다 낮게. 0.3·0.5·0.7·1.0을 일상어 평가로 비교)
 
 _CAMEL = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_]*|\d+|[가-힣]+")
@@ -178,10 +179,15 @@ class MethodIndex:
 
         return self.embedder is not None and has_vector_index(self.conn) == self.embedder.name
 
-    def bm25(self, query: str, expand: bool = True, k1: float = 1.2, b: float = 0.75) -> dict[int, float]:
+    def bm25(self, query: str, expand: bool = True, k1: float = 1.2, b: float = 0.75,
+             extra_terms: list[str] | None = None) -> dict[int, float]:
+        """extra_terms: LLM이 넓힌 말. 질문에 없는 토큰만 낮은 가중치로 더한다."""
         terms = Counter(tokenize(query))
         for t in self.expand(query) if expand else []:
             terms[t] += 0.5
+        for t in dict.fromkeys(tokenize(" ".join(extra_terms or []))):
+            if t not in terms:
+                terms[t] = _EXTRA_WEIGHT
         scores: dict[int, float] = {}
         for mid, tf in self.tf.items():
             score = 0.0
@@ -203,19 +209,20 @@ class MethodIndex:
         return {mid: 1.0 - dist for mid, dist in vector_search(self.conn, query_vector, top) if mid in self.labels}
 
     def search(self, query: str, top: int = 5, expand: bool = True, graph: bool = True,
-               mode: str = "auto") -> list[Hit]:
+               mode: str = "auto", extra_terms: list[str] | None = None) -> list[Hit]:
         """mode: bm25, vector, hybrid(선형 결합), rrf(비교용), auto(벡터 색인이 있으면 hybrid).
-        expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교)."""
+        expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교).
+        extra_terms=LLM이 넓힌 말 (BM25에만 낮은 가중치로 더한다. 벡터는 원래 질문으로)."""
         if mode == "auto":
             mode = "hybrid" if self.has_vectors else "bm25"
         if mode == "bm25":
-            scores = self.bm25(query, expand)
+            scores = self.bm25(query, expand, extra_terms=extra_terms)
         elif mode == "vector":
             scores = self.vector(query)
         elif mode == "rrf":  # 비교용: 순위만 합치면 BM25의 확신 있는 1순위가 희석된다
-            scores = _rrf([self.bm25(query, expand), self.vector(query)])
+            scores = _rrf([self.bm25(query, expand, extra_terms=extra_terms), self.vector(query)])
         else:
-            scores = _linear(self.bm25(query, expand), self.vector(query), _VECTOR_WEIGHT)
+            scores = _linear(self.bm25(query, expand, extra_terms=extra_terms), self.vector(query), _VECTOR_WEIGHT)
         scores = self._answer_boost(query, scores)
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)
@@ -243,6 +250,42 @@ class MethodIndex:
             if coverage >= _ANSWER_MIN_COVERAGE:
                 boosted[mid] = boosted.get(mid, 0.0) + _ANSWER_BOOST * coverage * top
         return boosted
+
+    def coverage(self, query: str, method_id: int) -> float:
+        """질문 낱말(idf 가중) 중 이 메서드 문서에 있는 비율 (0~1). 넓힌 말은 넣지 않는다.
+        흔한 말(service·목록)만 맞으면 낮고, 드문 업무 낱말(연차·incorrect)이 맞으면 높다.
+        코드 어디에도 없는 낱말(나눠·의존성)은 가장 드문 말로 쳐서, 그런 말이 많은 질문은 낮게 나온다."""
+        terms = set(tokenize(query))
+        unseen = math.log(1 + (len(self.tf) + 0.5) / 0.5)
+        total = sum(self.idf.get(t, unseen) for t in terms)
+        if not total:
+            return 0.0
+        tf = self.tf.get(method_id, {})
+        return sum(self.idf.get(t, unseen) for t in terms if t in tf) / total
+
+    def matched_words(self, query: str, method_id: int, extra_terms: list[str] | None = None,
+                      limit: int = 6) -> list[str]:
+        """이 메서드 문서에 있는 질문 낱말(조사 뗀 꼴)과 넓힌 말. 후보를 고른 이유로 보여 준다."""
+        tf = self.tf.get(method_id, {})
+        found: list[str] = []
+        for word in _WORD.findall(query) + list(extra_terms or []):
+            if re.match(r"[가-힣]", word):
+                word = _strip_ending(word)
+                if word in _STOP_KO:
+                    continue
+                # 보여 줄 때는 끝 조사 한 글자도 뗀다 ("연차가" → 연차). 뗀 말이 맞을 때만
+                if len(word) > 2 and word[-1] in "이가의도에와과" and all(
+                        t in tf for t in tokenize(word[:-1])):
+                    word = word[:-1]
+            tokens = tokenize(word)
+            if not tokens:
+                continue
+            # 한국어는 글자 2-gram이 모두 (로그인 = 로그 + 그인), 영어는 단어 통째나 카멜 조각이 모두 있어야
+            parts = [t for t in tokens if t != word.lower()] or tokens
+            hit = all(t in tf for t in parts) or word.lower() in tf
+            if hit and word not in found:
+                found.append(word)
+        return found[:limit]
 
 
 def _linear(bm25: dict[int, float], vector: dict[int, float], weight: float) -> dict[int, float]:

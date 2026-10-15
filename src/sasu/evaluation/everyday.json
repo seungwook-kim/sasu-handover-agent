@@ -1,0 +1,122 @@
+{
+  "project": "egovframe-common-components",
+  "about": "일상어 검색 평가 세트. 질문은 사용성 시험(페르소나 20명)의 할 일·세션 기록에서 나온 한국어 일상어. 정답은 eGovFrame 공통컴포넌트 v5.0.0 코드를 직접 읽어 정한 메서드(Class.method) 집합이고, 상위 6 후보에 하나라도 있으면 맞힘. gold가 빈 질문은 코드에 답이 없는 일반 개념 질문으로, 1위 후보를 low_confidence로 표시해야 맞힘.",
+  "questions": [
+    {
+      "id": "E01",
+      "question": "로그인 5번 틀리면 잠겨?",
+      "gold": ["EgovLoginController.actionLogin", "EgovLoginServiceImpl.processLoginIncorrect", "EgovLoginServiceImpl.selectLoginIncorrect",
+               "LoginDAO.updateLoginIncorrect", "LoginDAO.selectLoginIncorrect", "EgovSpringSecurityLoginFilter.doFilterInternal",
+               "EgovSpringSecurityLoginFilter.invokeProcessLoginIncorrect", "EgovSpringSecurityLoginFilter.invokeSelectLoginIncorrect"],
+      "evidence": "processLoginIncorrect: lockCnt + 1 >= egovLoginConfig.getLockCount()면 updateAt=L(잠금). globals.properties Globals.login.LockCount = 5. actionLogin·doFilterInternal이 부른다"
+    },
+    {
+      "id": "E02",
+      "question": "로그인 실패 횟수는 어디에 저장돼?",
+      "gold": ["LoginDAO.updateLoginIncorrect", "EgovLoginServiceImpl.processLoginIncorrect", "LoginDAO.selectLoginIncorrect", "EgovLoginServiceImpl.selectLoginIncorrect"],
+      "evidence": "processLoginIncorrect가 updateAt=C(횟수 증가)/L/E로 LoginDAO.updateLoginIncorrect(LoginUsr.updateLoginIncorrect+USER_SE)를 부른다"
+    },
+    {
+      "id": "E03",
+      "question": "실패 횟수 갱신 쿼리는 왜 사용자 구분마다 따로야?",
+      "gold": ["LoginDAO.updateLoginIncorrect", "EgovLoginServiceImpl.processLoginIncorrect"],
+      "evidence": "LoginDAO.updateLoginIncorrect: update(\"LoginUsr.updateLoginIncorrect\" + map.get(\"USER_SE\"), map)"
+    },
+    {
+      "id": "E04",
+      "question": "휴가 신청할 때 연차가 없으면 어떻게 돼?",
+      "gold": ["EgovVcatnManageServiceImpl.insertVcatnManage", "EgovVcatnManageController.insertVcatnManage"],
+      "evidence": "ServiceImpl.insertVcatnManage: 잔여연차 - 신청일수 < 0이면 \"02\"(반차는 \"03\"), 컨트롤러가 vacationFail 메시지로 등록 화면에 돌려보냄"
+    },
+    {
+      "id": "E05",
+      "question": "휴가 신청할 때 09는 왜 따로 처리해?",
+      "gold": ["EgovVcatnManageController.insertVcatnManage", "EgovVcatnManageServiceImpl.insertVcatnManage", "EgovVcatnManageServiceImpl.getVcatnYearSE"],
+      "evidence": "ServiceImpl.insertVcatnManage: getVcatnYearSE가 false면 \"09\", 컨트롤러가 sTemp.equals(\"09\")면 thatYearOnly 메시지"
+    },
+    {
+      "id": "E06",
+      "question": "공통코드 등록할 때 같은 코드ID가 있으면 왜 등록 화면으로 돌아가?",
+      "gold": ["EgovCcmCmmnCodeManageController.insertCmmnCode", "EgovCcmCmmnCodeManageServiceImpl.insertCmmnCode", "CmmnCodeManageDAO.insertCmmnCode"],
+      "evidence": "Controller.insertCmmnCode: selectCmmnCodeDetail 결과가 있으면 codeCheck 메시지와 함께 EgovCcmCmmnCodeRegist 반환"
+    },
+    {
+      "id": "E07",
+      "question": "게시판에 새 글 쓸 때 글 번호는 어디서 만들어?",
+      "gold": ["EgovArticleServiceImpl.insertArticleAndFiles", "EgovArticleDAO.insertArticle", "EgovArticleDAO.replyArticle", "EgovArticleController.insertArticle"],
+      "evidence": "insertArticleAndFiles: board.setNttId(nttIdgenService.getNextIntegerId()), insertArticle SQL의 selectKey가 NTT_NO = MAX(SORT_ORDR)+1"
+    },
+    {
+      "id": "E08",
+      "question": "게시판 목록 볼 때 공지글은 어떻게 따로 가져와?",
+      "gold": ["EgovArticleServiceImpl.selectNoticeArticleList", "EgovArticleDAO.selectNoticeArticleList", "EgovArticleController.selectArticleList"],
+      "evidence": "EgovArticleController.selectArticleList: '공지사항 추출' egovArticleService.selectNoticeArticleList(boardVO)"
+    },
+    {
+      "id": "E09",
+      "question": "게시판 글을 지우면 DB에서 진짜 지워져?",
+      "gold": ["EgovArticleServiceImpl.deleteArticle", "EgovArticleDAO.deleteArticle", "EgovArticleController.deleteBoardArticle"],
+      "evidence": "deleteArticle SQL은 DELETE가 아니라 UPDATE COMTNBBS SET USE_AT='N', 제목을 '이 글은 작성자에 의해서 삭제되었습니다.'로"
+    },
+    {
+      "id": "E10",
+      "question": "당직 목록은 어디서 가져와?",
+      "gold": ["EgovBndtManageController.selectBndtManageList", "EgovBndtManageServiceImpl.selectBndtManageList", "BndtManageDAO.selectBndtManageList", "EgovBndtManageController.selectBndtManageListView"],
+      "evidence": "Javadoc '당직관리정보를 관리하기 위해 등록된 당직관리 목록을 조회한다'"
+    },
+    {
+      "id": "E11",
+      "question": "첨부파일 정보는 어느 테이블에 저장돼?",
+      "gold": ["FileManageDAO.insertFileInfs", "FileManageDAO.insertFileInf", "EgovFileMngServiceImpl.insertFileInfs", "EgovFileMngServiceImpl.insertFileInf"],
+      "evidence": "FileManageDAO.insertFileInf(s)가 파일 속성(COMTNFILE)과 상세(COMTNFILEDETAIL)를 등록"
+    },
+    {
+      "id": "E12",
+      "question": "사용자 등록할 때 아이디 중복 확인은 어디서 해?",
+      "gold": ["EgovEmplyrManageController.checkIdDplct", "EgovEmplyrManageController.checkIdDplctAjax", "EgovEmplyrManageServiceImpl.checkIdDplct", "EmplyrManageDAO.checkIdDplct"],
+      "evidence": "Javadoc '입력한 사용자아이디의 중복여부를 체크하여 사용가능여부를 확인', 화면은 /uss/umt/EgovIdDplctCnfirm*.do"
+    },
+    {
+      "id": "E13",
+      "question": "비밀번호 바꿀 때 지금 비밀번호를 틀리게 넣으면 어떻게 돼?",
+      "gold": ["EgovEmplyrManageController.updatePassword", "EgovMberManageController.updatePassword", "EgovEntrprsManageController.updatePassword"],
+      "evidence": "Controller.updatePassword: 암호화한 옛 비밀번호가 저장값과 다르면 resultMsg=fail.user.passwordUpdate1"
+    },
+    {
+      "id": "E14",
+      "question": "비밀번호는 어떻게 암호화해서 저장해?",
+      "gold": ["EgovFileScrty.encryptPassword", "EgovFileScrty.checkPassword"],
+      "evidence": "EgovFileScrty.encryptPassword: '복호화가 되면 안되므로 SHA-256 인코딩 방식 적용'"
+    },
+    {
+      "id": "E15",
+      "question": "로그인하면 접속 기록은 어디에 남아?",
+      "gold": ["EgovLoginLogAspect.logLogin", "EgovLoginLogServiceImpl.logInsertLoginLog", "LoginLogDAO.logInsertLoginLog"],
+      "evidence": "EgovLoginLogAspect.logLogin '로그인 로그정보를 생성한다' → logInsertLoginLog '접속로그를 기록한다'"
+    },
+    {
+      "id": "E16",
+      "question": "휴가 신청하면 결재는 어떻게 올라가?",
+      "gold": ["EgovVcatnManageServiceImpl.insertVcatnManage", "EgovVcatnManageServiceImpl.converToInfrmlSanctnObject", "EgovVcatnManageController.insertVcatnManage"],
+      "evidence": "ServiceImpl.insertVcatnManage: infrmlSanctnService.insertInfrmlSanctn(converToInfrmlSanctnObject(vcatnManageVO))로 약식결재 등록"
+    },
+    {
+      "id": "G01",
+      "question": "Service와 ServiceImpl은 왜 나눠?",
+      "gold": [],
+      "evidence": "일반 설계 관행(인터페이스·구현 분리) 질문. 특정 메서드에 답이 없음"
+    },
+    {
+      "id": "G02",
+      "question": "스프링에서 의존성 주입은 왜 쓰는 거야?",
+      "gold": [],
+      "evidence": "일반 개념 질문"
+    },
+    {
+      "id": "G03",
+      "question": "MyBatis랑 JPA 중에 뭐가 더 좋아?",
+      "gold": [],
+      "evidence": "일반 개념 질문"
+    }
+  ]
+}

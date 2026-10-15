@@ -315,7 +315,10 @@ def create_app() -> FastAPI:
             return {
                 # auto: 사람이 정하지 않고 검색 1위로 골랐다 → 화면이 답 전에 대상이 맞는지 묻는다
                 "auto": sel.auto,
-                "candidates": [asdict(c) for c in sel.candidates],
+                "candidates": [asdict(c) for c in sel.candidates],  # 후보마다 why(고른 이유)
+                # 검색 1위가 질문과 약하게만 맞는다 → 화면이 경고하고 직접 고르게 한다
+                "low_confidence": sel.low_confidence,
+                "expanded_terms": sel.expanded_terms,  # LLM이 넓힌 말 (없으면 [])
                 "target": {**asdict(chosen), "label_ko": Labels(conn).full(chosen.method_id)} if chosen else None,
                 "evidence": [asdict(e) for e in evidence],
             }

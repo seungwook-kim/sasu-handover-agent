@@ -127,6 +127,10 @@
         <input type="search" id="q-search" placeholder="질문·업무명·클래스·파일 검색 (Enter로 결과로)" aria-label="질문 검색">
         <a class="btn" id="q-export-visible" href="/api/questions/export" download title="지금 목록에 보이는 질문만 엑셀로 받아요"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg><span id="q-export-visible-text">보이는 질문지 내려받기</span></a>
         <a class="btn" href="/api/questions/export" download aria-label="전체 질문지 내려받기" title="전체 질문지 내려받기">전체</a>
+        <span class="selbar hidden" id="q-selbar" role="group" aria-label="고른 질문">
+          <a class="btn primary" id="q-export-selected" href="/api/questions/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg><span id="q-export-selected-text">선택한 질문 내려받기</span></a>
+          <button class="btn" type="button" id="q-select-clear"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-x"/></svg>선택 해제</button>
+        </span>
         <button class="btn" type="button" id="q-import"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-up"/></svg>답변 엑셀 올리기</button>
         <input type="file" id="q-import-file" accept=".xlsx" class="visually-hidden" tabindex="-1" aria-hidden="true">
         <div class="menu-wrap">
