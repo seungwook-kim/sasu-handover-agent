@@ -70,6 +70,8 @@
 <symbol id="i-git-branch" viewBox="0 0 24 24"><path d="M15 6a9 9 0 0 0-9 9V3"/> <circle cx="18" cy="6" r="3"/> <circle cx="6" cy="18" r="3"/></symbol>
 <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/> <path d="M5 5a1 1 0 0 0-1 1v7c0 5 3.5 7.5 7.67 8.94a1 1 0 0 0 .67.01c2.35-.82 4.48-1.97 5.9-3.71"/> <path d="M9.309 3.652A12.252 12.252 0 0 0 11.24 2.28a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1v7a9.784 9.784 0 0 1-.08 1.264"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/> <path d="M14 2v5a1 1 0 0 0 1 1h5"/> <path d="M10 9H8"/> <path d="M16 13H8"/> <path d="M16 17H8"/></symbol>
+<symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/> <path d="M14 11v6"/> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/> <path d="M3 6h18"/> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
 <symbol id="i-house" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/> <path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
   </svg>
 
@@ -114,6 +116,22 @@
         <b id="q-progress-text">질문을 불러오는 중…</b>
         <div class="progress" id="q-progressbar" role="progressbar" aria-label="먼저 물을 질문 답변 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="q-progress" style="width:0"></i></div>
       </div>
+      <!-- 인수인계 문서: 진행 줄 바로 아래 접기 하나 (머리에 "문서 n개", 펼치면 올리기·목록) -->
+      <details class="docs-fold" id="docs-fold">
+        <summary><svg class="icon i14 chev" aria-hidden="true" focusable="false"><use href="#i-chevron-right"/></svg><svg class="icon i14 doc-ic" aria-hidden="true" focusable="false"><use href="#i-file-text"/></svg>인수인계 문서<span class="muted xs" id="docs-sum"></span></summary>
+        <div class="card pad docs-panel" id="docs-panel">
+          <div class="dropzone" id="docs-drop">
+            <svg class="icon i20" aria-hidden="true" focusable="false"><use href="#i-file-up"/></svg>
+            <span>전임자가 남긴 문서를 여기에 끌어 놓거나</span>
+            <button class="btn sm" type="button" id="docs-pick">파일 고르기</button>
+            <span class="muted xs">여러 개 가능 · md·txt·docx·xlsx·pptx·pdf·hwpx·hwp</span>
+          </div>
+          <input type="file" id="docs-file" multiple accept=".md,.markdown,.txt,.docx,.xlsx,.pptx,.pdf,.hwpx,.hwp" class="visually-hidden" tabindex="-1" aria-hidden="true">
+          <p class="muted xs docs-note">비밀번호·IP·계정 같은 비밀은 가리고 조각만 저장해요. 원본 파일은 남기지 않아요. 문서는 오래됐을 수 있어 사수는 [문서] 등급으로 따로 표시하고, 코드와 다른 곳은 '문서 확인' 질문으로 만들어요.</p>
+          <div id="docs-result"></div>
+          <div id="docs-list"></div>
+        </div>
+      </details>
       <div class="toolbar" id="q-toolbar">
         <div class="seg" id="q-status" role="group" aria-label="답변 상태">
           <button type="button" data-status="open" aria-pressed="true">미답변</button>
@@ -183,7 +201,7 @@
 
     <section class="view" id="view-ask">
       <h2>사수에게 묻기</h2>
-      <p class="lead">코드가 왜 이런지 물어보세요. 코드·SQL·받은 답변·커밋 기록만 근거로 답하고, 문장마다 믿을 만한 정도를 표시합니다.</p>
+      <p class="lead">코드가 왜 이런지 물어보세요. 코드·SQL·받은 답변·커밋 기록을 근거로 답하고(올린 인수인계 문서는 [문서] 등급), 문장마다 믿을 만한 정도를 표시합니다.</p>
       <form class="card ask-box" id="ask-form">
         <label class="visually-hidden" for="ask-q">질문</label>
         <textarea id="ask-q" placeholder="예: 휴가 신청할 때 연차가 없으면 어떻게 돼? (Ctrl+Enter로 묻기)" required></textarea>
@@ -221,6 +239,15 @@
             <ul class="suggest card hidden" id="asis-suggest" role="listbox" aria-label="기능 후보"></ul>
           </div>
           <a class="btn primary" id="asis-go" href="/api/behaviors/export" download><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-spreadsheet"/></svg><span id="asis-go-text">기존 동작 목록 받기</span></a>
+          <!-- 보조: 인수인계서(같은 범위). 주 버튼은 기존 동작 목록 -->
+          <div class="menu-wrap">
+            <button class="btn menu-btn" type="button" id="hd-menu-btn" aria-haspopup="true" aria-expanded="false"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-text"/></svg>인수인계서 만들기<svg class="icon i14" aria-hidden="true" focusable="false"><use href="#i-chevron-down"/></svg></button>
+            <div class="card menu wide hidden" id="hd-menu">
+              <button type="button" data-format="docx"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg>Word(.docx)로 받기</button>
+              <button type="button" data-format="md"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-file-down"/></svg>Markdown(.md)으로 받기</button>
+              <p class="note" id="hd-scope">범위: 전체</p>
+            </div>
+          </div>
         </div>
         <div class="muted xs asis-pick" id="asis-pick" aria-live="polite"></div>
         <ol class="asis-steps" aria-label="고도화 후 확인 열 채우는 법">

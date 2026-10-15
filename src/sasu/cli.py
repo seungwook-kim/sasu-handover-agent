@@ -30,6 +30,15 @@ from sasu.trace import TraceNode, coverage, find_urls, trace_url
 app = typer.Typer(help="사수: 떠난 개발자 대신 답하는 SI 인수인계 에이전트", no_args_is_help=True)
 console = Console()
 
+
+def _add_docs_app() -> None:
+    from sasu.docs.cli import docs_app  # sasu docs add|list|show|remove|search|conflicts|relink
+
+    app.add_typer(docs_app, name="docs")
+
+
+_add_docs_app()
+
 _STYLE = {
     "Controller": "bold cyan",
     "RestController": "bold cyan",
@@ -139,6 +148,9 @@ def index(repo: Path = typer.Argument(..., exists=True, file_okay=False, help="�
         conn = db.connect(db_path)
         stats = index_repository(conn, repo, settings.sql_dialect)
         statements = conn.execute("SELECT COUNT(*) FROM statements").fetchone()[0]
+        from sasu.docs.linking import relink_all
+
+        relink_all(conn)  # 넣어 둔 인수인계 문서를 새 코드와 다시 잇는다 (문서가 없으면 아무것도 안 함)
     set_current_project(name)
     elapsed = time.perf_counter() - started
 
@@ -378,7 +390,7 @@ def _embedder_or_none():
         return None
 
 
-_LABEL_STYLE = {"사실": "green", "답변": "cyan", "추정": "yellow", "모름": "red", "질문": "magenta"}
+_LABEL_STYLE = {"사실": "green", "답변": "cyan", "추정": "yellow", "모름": "red", "질문": "magenta", "문서": "blue"}
 
 
 @app.command()
@@ -413,14 +425,21 @@ def ask(
     chosen = sel.target
     console.print(f"\n[bold]대상[/bold] {chosen.label}  [dim]{_short(chosen.path)}:{chosen.line_start}[/dim]")
 
-    evidence = evidence_for(conn, chosen, use_git=not no_git)
+    evidence = evidence_for(conn, chosen, use_git=not no_git, question=question)
     for e in evidence:
         body = e.text
         if e.title.endswith(" 코드") and not show_code:
             lines = body.splitlines()
             body = "\n".join(lines[:12]) + (f"\n… {len(lines) - 12}줄 더 (--show-code)" if len(lines) > 12 else "")
-        console.print(f"\n[bold]{e.id}[/bold] [dim]({e.level})[/dim] {e.title}")
+        if e.level == "문서":  # [문서] 인수인계서.docx 3.2 배치 운영 (2025-03)
+            console.print(f"\n[bold]{e.id}[/bold] [blue][문서][/blue] {e.title}")
+        else:
+            console.print(f"\n[bold]{e.id}[/bold] [dim]({e.level})[/dim] {e.title}")
         console.print(body, style="dim", markup=False, highlight=False)
+    from sasu.rag.pipeline import doc_conflicts_for
+
+    for c in doc_conflicts_for(conn, evidence):
+        console.print(f"\n[yellow]⚠ {c.message}[/yellow]\n  [dim]물어볼 질문: {c.question}[/dim]")
 
     client = make_llm_client(load_settings())
     try:
@@ -543,17 +562,19 @@ def eval_search(
 def eval_everyday(
     set_path: Path = typer.Option(None, "--set", help="평가 세트 JSON (기본: 내장 everyday.json, eGovFrame 공통컴포넌트)"),
     db_path: Path = typer.Option(None, "--db", help="분석 파일 (기본: 세트의 project 이름으로 찾음)"),
-    split: str = typer.Option("all", "--split", help="dev | test | all (all이면 split별로 따로 보고)"),
+    split: str = typer.Option("all", "--split", help="dev | test | holdout | all (all이면 split별로 따로 보고)"),
     runs: int = typer.Option(1, "--runs", min=1, help="넓히기를 캐시 없이 N번 다시 재서 흔들림을 본다"),
     expand_variant: str = typer.Option(None, "--expand-variant",
                                        help="넓히기 변형 default | strict | union2 (쉼표로 여럿, 기본 SASU_EXPAND_VARIANT)"),
     no_llm: bool = typer.Option(False, "--no-llm", help="LLM 넓히기 없이 (a)만"),
+    rerank: str = typer.Option("auto", "--rerank",
+                               help="LLM 재순위 auto | off | llm | both (auto: 지금 설정이 재순위를 켜면 llm, 아니면 off)"),
     no_cache: bool = typer.Option(False, "--no-cache", help="넓히기 캐시를 읽지도 쓰지도 않고 LLM을 다시 불러 지연을 잰다"),
     out: Path = typer.Option(None, "--out", help="요약 + 질문별·실행별 원자료 JSON"),
 ) -> None:
     """일상어 질문으로 묻기 대상 후보를 잰다: 상위 6·1위 정답률(95% Wilson 구간), 질문별 안정성,
-    (a) 대비 짝 비교, 일반 질문 low_confidence 정확도, 지연. (a) 지금 검색 (b) + LLM 질문 넓히기(변형별).
-    --runs·--no-cache면 넓히기 캐시를 읽지도 쓰지도 않는다. 분석 파일은 읽기 전용으로 연다."""
+    (a) 대비 짝 비교, 일반 질문 low_confidence 정확도, 지연. (a) 지금 검색 (b) + LLM 질문 넓히기(변형별,
+    --rerank면 + LLM 재순위). --runs·--no-cache면 넓히기·재순위 캐시를 읽지도 쓰지도 않는다. 분석 파일은 읽기 전용으로 연다."""
     import json
 
     from rich.markup import escape
@@ -562,9 +583,17 @@ def eval_everyday(
     from sasu.rag.expand import VARIANTS, QueryExpander, make_expand_client
     from sasu.rag.expand import variant as default_variant
     from sasu.rag.pipeline import embedder_or_none
+    from sasu.rag.rerank import LLMReranker, make_reranker
     from sasu.rag.search import MethodIndex
 
     data = load_set(set_path)
+    rerank = rerank.strip().lower()
+    if rerank not in ("auto", "off", "llm", "both"):
+        console.print(f"[red]--rerank는 auto, off, llm, both 중 하나: {rerank}[/red]")
+        raise typer.Exit(1)
+    if rerank == "auto":
+        rerank = "llm" if not no_llm and make_reranker() is not None else "off"
+    rerank_modes = {"off": [False], "llm": [True], "both": [False, True]}[rerank]
     try:
         questions = select(data["questions"], split)
     except ValueError as e:
@@ -593,11 +622,13 @@ def eval_everyday(
             if not expander.available:
                 console.print("[yellow]LLM이 없어 (b)는 건너뜁니다 (SASU_LLM_PROVIDER).[/yellow]")
                 break
-            label = f"(b) 넓히기 {name}"
-            groups[label] = []
-            for i in range(runs):
-                with console.status(f"LLM으로 질문을 넓혀 검색하는 중… {name} {i + 1}/{runs}"):
-                    groups[label].append(run_variant(conn, label, questions, index, expander))
+            for with_rerank in rerank_modes:
+                reranker = LLMReranker(expander.client, use_cache=use_cache) if with_rerank else None
+                label = f"(b) 넓히기 {name}" + (" + 재순위" if with_rerank else "")
+                groups[label] = []
+                for i in range(runs):
+                    with console.status(f"LLM으로 질문을 넓혀 검색하는 중… {label} {i + 1}/{runs}"):
+                        groups[label].append(run_variant(conn, label, questions, index, expander, reranker=reranker))
     shown = [s for s in SPLITS if any(split_of(q) == s for q in questions)]
     summary = report(groups, shown, base)
     cache_note = "넓히기 캐시 씀" if use_cache else "넓히기 캐시 안 씀"
@@ -618,7 +649,7 @@ def eval_everyday(
         table = Table(title=escape(f"[{s}] 정답 있는 질문 {first['specific']} · 일반 개념 {first['general']}"),
                       title_justify="left")
         for col in ("검색", "실행", "상위 6", "95% 구간", "1위", "95% 구간", "항상/흔들/틀림", "(a) 대비",
-                    "low_conf 일반·정답", "지연·넓히기(초)"):
+                    "low_conf 일반·정답", "지연·넓히기·재순위(초)"):
             table.add_column(col, justify="left" if col == "검색" else "right")
         for name, r in summary[s].items():
             st, pv = r["stability"], r["paired_vs_base"]
@@ -626,7 +657,7 @@ def eval_everyday(
                           ci(r["top1"]["pooled_ci"]), f"{st['always']}/{st['flaky']}/{st['never']}",
                           f"+{pv['wrong_to_right']} −{pv['right_to_wrong']}" if pv else "-",
                           f"{pct(r['low_conf_general']['mean'])}·{pct(r['low_conf_specific']['mean'])}",
-                          f"{r['avg_seconds']:.2f}·{r['avg_expand_seconds']:.2f}")
+                          f"{r['avg_seconds']:.2f}·{r['avg_expand_seconds']:.2f}·{r['avg_rerank_seconds']:.2f}")
         console.print(table)
         console.print("[dim]상위 6·1위: 실행 평균 (최소~최대) · 95% 구간: 질문×실행을 합친 Wilson · "
                       "항상/흔들/틀림: 질문별 N번 중 맞힌 횟수 · (a) 대비: 다수결로 틀림→맞음 +, 맞음→틀림 − · "
@@ -638,6 +669,7 @@ def eval_everyday(
             top1 = " · ".join(pct(x) for x in r["top1"]["per_run"])
             dist = " ".join(f"{k}회:{v}" for k, v in r["stability"]["distribution"].items())
             errors = f" · 넓히기 실패 {r['expand_errors']}번" if r["expand_errors"] else ""
+            errors += f" · 재순위 실패 {r['rerank_errors']}번" if r.get("rerank_errors") else ""
             console.print(f"  {name} 실행별 상위 6: {per}\n    1위: {top1} · 맞힌 횟수별 질문 수 {dist}{errors}")
     for q in questions:
         marks = []
@@ -659,10 +691,56 @@ def eval_everyday(
         console.print(f"• {line}{terms}")
     if out:
         meta = {"project": data["project"], "split": split, "runs": runs, "variants": names if not no_llm else [],
+                "rerank": rerank,
                 "expand_cache": use_cache, "search": "hybrid" if index.has_vectors else "bm25"}
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(to_json(groups, shown, base, meta), ensure_ascii=False, indent=1), encoding="utf-8")
         console.print(f"[dim]요약·질문별·실행별 결과: {out}[/dim]")
+
+
+@app.command("eval-docs")
+def eval_docs(
+    docs: Path = typer.Option(..., "--docs", exists=True, file_okay=False, help="가상 인수인계 문서 폴더"),
+    key: Path = typer.Option(..., "--key", exists=True, dir_okay=False, help="정답 목록 answer-key.json"),
+    db_path: Path = typer.Option(..., "--db", exists=True, dir_okay=False, help="분석 파일 (복사본에만 문서를 넣는다)"),
+    work: Path = typer.Option(None, "--work", help="복사본을 둘 폴더 (기본: 임시 폴더)"),
+    llm_judge: bool = typer.Option(False, "--llm-judge", help="불일치를 LLM으로도 판정해 규칙과 합친다 (SASU_JUDGE_*)"),
+    expand: bool = typer.Option(False, "--expand", help="문서 질문 검색을 질문 넓히기(SASU_EXPAND_*)와 함께도 잰다"),
+    no_everyday: bool = typer.Option(False, "--no-everyday", help="기존 코드 질문(넣기 전·후) 비교를 건너뛴다"),
+    no_embed: bool = typer.Option(False, "--no-embed", help="벡터 없이 BM25만"),
+    out: Path = typer.Option(None, "--out", help="지표·질문별 원자료 JSON"),
+) -> None:
+    """인수인계 문서 기능을 정답 목록으로 잰다: 형식별 읽기, 비밀 가림, 불일치 재현율·정밀도,
+    문서 질문 상위 6·1위, 코드 연결, 기존 코드 질문 정답률(문서 넣기 전·후). 원본 분석 파일은 바꾸지 않는다."""
+    from sasu.evaluation.docs_eval import print_report, run
+    from sasu.rag.pipeline import embedder_or_none
+
+    judge = None
+    if llm_judge:
+        from sasu.docs.judge import ConflictJudge
+
+        judge = ConflictJudge.from_settings(load_settings())
+        if not judge.available:
+            console.print("[red]LLM 판정을 쓸 수 없어요 (SASU_JUDGE_PROVIDER·API 키 확인).[/red]")
+            raise typer.Exit(1)
+    expander = None
+    if expand:
+        from sasu.rag.expand import QueryExpander, make_expand_client
+
+        expander = QueryExpander(make_expand_client(load_settings()))
+        if not expander.available:
+            console.print("[red]질문 넓히기 LLM을 쓸 수 없어요 (SASU_EXPAND_PROVIDER).[/red]")
+            raise typer.Exit(1)
+    with console.status("문서 평가 중…") as status:
+        result = run(docs, key, db_path, work, None if no_embed else embedder_or_none(), everyday=not no_everyday,
+                     judge=judge, expander=expander, progress=lambda msg: status.update(f"문서 평가 중… {msg}"))
+    print_report(console, result)
+    if out:
+        import json
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
+        console.print(f"[dim]원자료: {out}[/dim]")
 
 
 @app.command("eval-why")
@@ -753,6 +831,48 @@ def behaviors(
         console.print(f"[green]엑셀로 내보냄[/green]: {export} ({n}개). 고도화가 끝나면 \"고도화 후 확인\" 열을 채우세요.")
     elif limit and len(items) > limit:
         console.print(f"[dim]… {len(items) - limit}개 더 (--limit 0, 또는 --export 파일.xlsx)[/dim]")
+
+
+@app.command("handover-doc")
+def handover_doc(
+    module: str = typer.Option(None, "--module", help="모듈 하나만 (예: uss.ion). 비우면 전체"),
+    business: str = typer.Option(None, "--business", help="업무명 하나만 (예: 휴가관리)"),
+    fmt: str = typer.Option("both", "--format", help="docx, md, both"),
+    out: Path = typer.Option(None, "--out", help="저장 경로(확장자 빼고). 비우면 지금 폴더의 <프로젝트>-인수인계서"),
+) -> None:
+    """인수인계서 만들기: 화면/업무별 URL → 코드 → SQL → 테이블, 받은 답변, 확인 필요(빈칸)를 docx·md로."""
+    from sasu.analysis.handover_doc import build_handover_doc, docx_available, outline, write_docx, write_markdown
+
+    if fmt not in ("docx", "md", "both"):
+        console.print("[red]--format은 docx, md, both 중 하나예요.[/red]")
+        raise typer.Exit(1)
+    if fmt == "docx" and not docx_available():
+        console.print("[red]docx로 쓰려면 python-docx가 필요해요: pip install 'sasu\\[docx]' (또는 --format md)[/red]")
+        raise typer.Exit(1)
+    started = time.perf_counter()
+    doc = build_handover_doc(_open_db(), module, business)  # 제목은 분석한 폴더 이름
+    if not doc.businesses:
+        console.print("[red]범위에 맞는 URL이 없어요. `sasu map`으로 모듈 이름, 웹 화면에서 업무명을 확인하세요.[/red]")
+        raise typer.Exit(1)
+    suffix = "".join(f"-{p.strip()}" for p in (module, business) if p and p.strip())
+    base = str(out or f"{doc.project}{suffix}-인수인계서")
+    base = base[: -len(Path(base).suffix)] if Path(base).suffix.lower() in (".md", ".docx") else base  # uss.ion 같은 점은 둔다
+    written = []
+    if fmt in ("md", "both"):
+        written.append(write_markdown(doc, Path(base + ".md")))
+    if fmt in ("docx", "both"):
+        if docx_available():
+            written.append(write_docx(doc, Path(base + ".docx")))
+        else:
+            console.print("[yellow]python-docx가 없어 md만 만들었어요 (pip install 'sasu\\[docx]').[/yellow]")
+    c = doc.counts
+    console.print(f"업무 {c['businesses']:,}개 · URL {c['urls']:,}개 · 받은 답변 {c['answered']:,}건 · "
+                  f"확인 필요 질문 {c['open']:,}건 · 관련 문서 조각 {c['doc_chunks']:,}개 "
+                  f"[dim]({time.perf_counter() - started:.1f}초)[/dim]")
+    heads = outline(doc)
+    console.print("차례: " + " / ".join(heads[:8]) + (f" … 외 {len(heads) - 8}" if len(heads) > 8 else ""))
+    for path in written:
+        console.print(f"[green]저장[/green]: {path}")
 
 
 @app.command("mcp")

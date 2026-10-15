@@ -215,3 +215,55 @@ def test_no_cache_neither_reads_nor_writes(conn, tmp_path):
 
 def _mid(index: MethodIndex, label: str) -> int:
     return next(mid for mid, lab in index.labels.items() if lab == label)
+
+
+def test_expand_returns_question_kind_in_same_call(conn, tmp_path):
+    from sasu.rag.expand import parse_output
+
+    assert parse_output('{"kind": "general", "terms": ["pool", "커넥션"]}', "커넥션 풀은 왜 써?") == (["pool"], "general")
+    assert parse_output('```json\n{"kind":"CODE","terms":["lock"]}\n```') == (["lock"], "code")
+    assert parse_output('["lock"]') == (["lock"], None)  # 예전 형식(배열)은 종류 없음
+    assert parse_output('{"kind": "몰라", "terms": "lock"}') == ([], None)
+    llm = FakeLLM('{"kind": "general", "terms": ["Session", "Cookie"]}')
+    ex = QueryExpander(llm, cache=tmp_path / "cache")
+    assert ex.expand(conn, "세션이랑 쿠키는 뭐가 달라?") == ["Session", "Cookie"] and ex.last_kind == "general"
+    assert "general" in llm.calls[0][0]["content"]  # 한 번의 호출에서 종류도 받는다
+    # 캐시에도 종류를 둔다
+    ex.expand(conn, "세션이랑 쿠키는 뭐가 달라?")
+    assert ex.last_cached and ex.last_kind == "general" and len(llm.calls) == 1
+    failing = QueryExpander(FakeLLM(error=LLMError("시간 초과")), cache=tmp_path / "c2")
+    assert failing.expand(conn, "휴가 신청은?") == [] and failing.last_kind is None
+    # union2: 둘 다 general일 때만 general
+    two = QueryExpander(CountingLLM(['{"kind":"general","terms":["a"]}', '{"kind":"code","terms":["b"]}']),
+                        cache=tmp_path / "c3", variant_name="union2")
+    two.expand(conn, "휴가 넣는 곳은 어디야?")
+    assert two.last_kind == "code"
+
+
+def test_low_confidence_uses_llm_kind_then_bm25_rule(conn, tmp_path):
+    from sasu.rag.pipeline import code_verbs
+
+    assert is_low_confidence(30.0, True, "general")
+    assert not is_low_confidence(30.0, True, "code") and not is_low_confidence(30.0, True, None)
+    assert not is_low_confidence(5.0, False, "code") and is_low_confidence(5.0, True, None)  # 판정이 있으면 그것만
+    index = MethodIndex(conn)
+    question = "남은 연차가 없으면 신청이 어떻게 돼?"
+    plain = search_question(conn, question, expander=None, index=index)
+    assert plain.question_kind is None  # LLM이 없으면 BM25 규칙 (작은 예제라 점수는 문턱 아래)
+    general = QueryExpander(FakeLLM('{"kind":"general","terms":["vacation"]}'), cache=tmp_path / "cache")
+    r = search_question(conn, question, expander=general, index=index)
+    assert r.question_kind == "general" and r.low_confidence
+    # 질문의 동작 말 중 LLM이 빠뜨린 코드 동사만 더한다 (expanded_terms에는 LLM 출력만)
+    assert code_verbs("비밀번호 바꿀 때 틀리면?", ["password", "change"]) == ["update"]
+    assert code_verbs("글 지우면 진짜 지워져?", ["Delete"]) == []
+    assert code_verbs("휴가 신청 목록", ["x"]) == ["insert", "select"]
+    assert r.expanded_terms == ["vacation"]
+
+
+def test_candidates_fill_up_when_few_classes(conn):
+    index = MethodIndex(conn)
+    one = search_question(conn, "남은 연차가 없으면 신청이 어떻게 돼?", expander=None, index=index, per_class=1)
+    two = search_question(conn, "남은 연차가 없으면 신청이 어떻게 돼?", expander=None, index=index, per_class=2)
+    # 클래스 제한으로 자리가 남으면 뺀 후보로 채운다 (같은 클래스가 더 나와도 후보 수는 줄지 않는다)
+    pool = len(index.search("남은 연차가 없으면 신청이 어떻게 돼?", top=30))
+    assert len(one.candidates) == len(two.candidates) == min(6, pool)

@@ -40,7 +40,31 @@ def class_modules(conn: sqlite3.Connection) -> dict[int, str]:
     rows = conn.execute("SELECT id, name, fqcn FROM classes").fetchall()
     packages = {r["id"]: r["fqcn"].rsplit("." + r["name"], 1)[0] for r in rows}
     root = package_root(list(set(packages.values())))
-    return {cid: module_of(pkg, root) for cid, pkg in packages.items()}
+    modules = {cid: module_of(pkg, root) for cid, pkg in packages.items()}
+    modules.update(_django_app_modules(conn, packages))
+    return modules
+
+
+def _django_app_modules(conn: sqlite3.Connection, packages: dict[int, str]) -> dict[int, str]:
+    """Django 프로젝트(apps.py가 있는 앱 폴더)의 Python 클래스는 앱 단위로 묶는다.
+    oscar/apps/basket/views.py → basket, oscar/apps/dashboard/orders/views.py → dashboard.orders."""
+    apps = {
+        r["module"].rsplit(".", 1)[0]
+        for r in conn.execute("SELECT module FROM files WHERE kind = 'python' AND (path LIKE '%/apps.py' OR path = 'apps.py')")
+        if r["module"] and "." in r["module"]
+    }
+    if not apps:
+        return {}
+    app_root = package_root(sorted(apps))
+    result = {}
+    for r in conn.execute("SELECT c.id FROM classes c JOIN files f ON f.id = c.file_id WHERE f.kind = 'python'"):
+        pkg = packages[r["id"]]
+        app = max((a for a in apps if pkg == a or pkg.startswith(a + ".")), key=len, default=None)
+        if app is None:
+            continue
+        rest = app[len(app_root):].lstrip(".") if app_root and app != app_root else app
+        result[r["id"]] = rest.rsplit("apps.", 1)[-1] if rest.startswith("apps.") or ".apps." in rest else (rest or app)
+    return result
 
 
 def statement_modules(conn: sqlite3.Connection, modules: dict[int, str]) -> dict[int, str]:

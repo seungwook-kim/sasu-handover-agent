@@ -29,6 +29,17 @@ local-embed = [
 mcp = [
     "mcp>=2.2,<3",  # 2.x API (MCPServer)
 ]
+docs = [
+    # sasu docs add: PDF(pypdf)·HWP 5.0(olefile). md·txt·docx·xlsx·pptx·hwpx는 기본 의존성만으로 읽는다
+    "pypdf>=6",
+    "olefile>=0.47",
+]
+anthropic = [
+    "anthropic>=1.14,<2",  # SASU_LLM_PROVIDER=anthropic · SASU_EXPAND_PROVIDER=anthropic (Claude API)
+]
+docx = [
+    "python-docx>=1.1",  # sasu handover-doc --format docx (md는 의존성 없이)
+]
 
 [dependency-groups]
 dev = [

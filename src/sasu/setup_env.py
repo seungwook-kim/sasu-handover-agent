@@ -97,6 +97,9 @@ def _llm_check(settings, ping: bool) -> Check:
     if provider == "claude-code":
         detail = f"claude CLI · {settings.llm_model or 'sonnet'}"
         fix = "claude CLI를 설치하고 로그인하세요 (개발용). 현장에서는 SASU_LLM_PROVIDER=openai로 사내 LLM 주소를 넣습니다"
+    elif provider == "anthropic":
+        detail = f"Claude API · {client.model}"
+        fix = ".env에 SASU_ANTHROPIC_API_KEY를 넣고 uv sync --extra anthropic으로 SDK를 설치하세요"
     else:
         detail = f"{settings.llm_base_url} · {settings.llm_model or '(모델 없음)'}"
         fix = "sasu setup으로 LLM 주소·키·모델을 넣으세요. 없어도 근거는 보여 주고, 답 문장만 만들지 않습니다"

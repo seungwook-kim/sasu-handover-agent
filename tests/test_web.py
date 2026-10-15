@@ -149,3 +149,14 @@ def test_ask_evidence_free_question_has_why_and_confidence(client, monkeypatch):
     assert isinstance(ev["low_confidence"], bool)
     assert ev["expanded_terms"] == ["order", "read"]
     assert all(c["why"] for c in ev["candidates"])
+
+
+def test_static_has_doc_screens(client):
+    """문서 화면: 질문 화면 문서 올리기(여러 개), 고도화 준비 [인수인계서 만들기 ▾], [문서] 등급·아이콘."""
+    page = client.get("/").text
+    assert 'id="docs-file" multiple' in page and 'id="docs-drop"' in page
+    assert 'id="hd-menu"' in page and 'data-format="docx"' in page and 'data-format="md"' in page
+    assert 'id="i-file-text"' in page and 'id="i-trash-2"' in page
+    js = client.get("/app.js").text
+    assert "문서: { cls: \"doc\"" in js and "/api/docs/linked" in js and "/api/handover-doc" in js
+    assert "--g-doc" in client.get("/style.css").text

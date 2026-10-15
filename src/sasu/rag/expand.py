@@ -4,6 +4,8 @@
 BM25가 거기까지 닿지 못한다. 검색 전에 LLM에게 영어 식별자 조각(login, incorrect, lock),
 이 프로젝트식 약어(업무명 ↔ 클래스 이름에서 뽑은 힌트), 한국어 동의어(잠김 → 잠금·제한)를 받아
 BM25 질의에 낮은 가중치로 더한다 (search.MethodIndex.bm25의 extra_terms).
+같은 호출에서 질문 종류(code: 이 프로젝트 코드 질문 / general: 일반 개념 질문, last_kind)도 받아
+검색 쪽 low_confidence 판단에 쓴다 (pipeline.is_low_confidence). 프롬프트가 바뀌면 캐시 키도 바뀐다.
 
 - 설정: SASU_QUERY_EXPAND = auto(기본: LLM이 있으면 켬) | on | off.
   SASU_EXPAND_VARIANT = default(기본) | strict | union2 (넓히기 출력 흔들림 줄이기 실험용, 아래 VARIANTS).
@@ -29,7 +31,7 @@ _HINT_PAIRS = 120  # 업무명=클래스 조각 힌트 수
 _HINT_FRAGMENTS = 50  # 자주 나오는 식별자 조각 수
 
 SYSTEM_PROMPT = """너는 코드 검색어를 넓히는 도구다. 개발자가 한국어 일상어로 한 질문을 받아,
-그 답이 들어 있는 소스 코드(메서드 이름·변수·주석·SQL)에 나올 법한 검색어를 고른다.
+그 답이 들어 있는 소스 코드(메서드 이름·변수·주석·SQL)에 나올 법한 검색어를 고르고, 질문 종류를 판정한다.
 
 고를 것:
 - 영어 식별자 조각 (예: login, incorrect, lock, count)
@@ -38,12 +40,17 @@ SYSTEM_PROMPT = """너는 코드 검색어를 넓히는 도구다. 개발자가 
 - 이 프로젝트식 약어: 아래 힌트의 "업무명=클래스 조각"과 "자주 나오는 조각"에서 질문과 맞는 것만
 - 코드 주석에 나올 한국어 동의어 (예: 잠겨 → 잠금, 제한 / 글 번호 → 게시물 아이디)
 
-규칙:
-- 질문에 이미 있는 낱말은 빼고 4~12개.
-- 특정 업무가 아닌 일반 프로그래밍 개념 질문이면 []만 쓴다.
-- 출력은 JSON 문자열 배열 하나만. 설명·코드 블록 없이.
+질문 종류 kind:
+- "code": 이 프로젝트의 특정 기능·화면·데이터·처리 규칙을 묻는다. 일반 개념이 섞여도 이 프로젝트에서
+  어떻게 하는지를 물으면 code (예: "우리는 트랜잭션을 어디서 걸어?")
+- "general": 특정 업무와 상관없는 일반 프로그래밍·DB·서버·프레임워크 개념이나 비교를 묻는다
+  (예: "제네릭에서 와일드카드는 언제 써?")
 
-예: "주문 취소하면 재고 돌아와?" → ["order","cancel","stock","restore","Ordr","Stck","취소처리","재고수량"]"""
+규칙:
+- 질문에 이미 있는 낱말은 빼고 4~12개. kind가 general이어도 검색어는 고른다.
+- 출력은 JSON 객체 하나만: {"kind": "code" 또는 "general", "terms": [검색어 문자열...]}. 설명·코드 블록 없이.
+
+예: "주문 취소하면 재고 돌아와?" → {"kind":"code","terms":["order","cancel","stock","restore","Ordr","Stck","취소처리","재고수량"]}"""
 
 # strict: 같은 질문에 같은 말이 나오게 순서·개수를 못박고, 힌트의 클래스 조각을 먼저 고르게 한다
 STRICT_PROMPT = """너는 코드 검색어를 넓히는 도구다. 개발자가 한국어 일상어로 한 질문을 받아,
@@ -118,11 +125,21 @@ def union_terms(runs: list[list[str]], weights: tuple[float, float] = UNION_WEIG
 
 
 def make_expand_client(settings: Settings):
-    """넓히기용 LLM. claude-code는 빠른 모델(기본 haiku)로, 나머지는 OpenAI 호환 주소로."""
-    from sasu.rag.answer import ClaudeCodeClient, LLMClient
+    """넓히기용 LLM. 공급자는 SASU_EXPAND_PROVIDER(auto면 SASU_LLM_PROVIDER와 같게: anthropic | claude-code | openai).
+    anthropic은 Claude API 빠른 모델(기본 claude-haiku-5-5, effort low)로 — claude CLI를 띄우는 것보다 3~4초 빠르다.
+    claude-code는 빠른 모델(기본 haiku)로, 나머지는 OpenAI 호환 주소로. 모델은 SASU_EXPAND_MODEL로 바꾼다."""
+    from sasu.rag.answer import AnthropicClient, ClaudeCodeClient, LLMClient
 
     model = os.environ.get("SASU_EXPAND_MODEL", "").strip()
-    if settings.llm_provider == "claude-code":
+    provider = os.environ.get("SASU_EXPAND_PROVIDER", "auto").strip().lower() or "auto"
+    if provider == "auto":
+        provider = settings.llm_provider
+    if provider == "anthropic":
+        # temperature는 못 넣는다 (Haiku 5.5는 기본값 1 외에는 400). thinking은 모델 기본(adaptive)에 effort low:
+        # 생각을 끈 것과 지연이 같았다 (앞 10문항 평균 1.42초 vs 1.46초)
+        return AnthropicClient(settings.anthropic_api_key, model or "claude-haiku-5-5", effort="low",
+                               max_tokens=4096, timeout=30.0)
+    if provider == "claude-code":
         return ClaudeCodeClient(model or "haiku", timeout=60.0)
     client = LLMClient(settings, timeout=30.0)
     if model:
@@ -152,6 +169,25 @@ def project_hints(conn: sqlite3.Connection) -> str:
     return f"업무명=클래스 조각: {pair_text}\n자주 나오는 조각: {frag_text}"
 
 
+KINDS = ("code", "general")  # 넓히기 LLM이 함께 내는 질문 종류 (이 프로젝트 코드 질문 / 일반 개념 질문)
+
+
+def parse_output(raw: str, question: str = "") -> tuple[list[str], str | None]:
+    """LLM 출력에서 (넓힌 말, 질문 종류)를 꺼낸다. {"kind": ..., "terms": [...]} 객체나 예전 형식인 배열.
+    종류가 없거나 code·general이 아니면 None (검색 쪽은 BM25 규칙으로 판단). 형식이 틀리면 ([], None)."""
+    start, end = raw.find("{"), raw.rfind("}")
+    if 0 <= start < end:
+        try:
+            data = json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            kind = str(data.get("kind", "")).strip().lower()
+            items = data.get("terms")
+            return _clean_terms(items if isinstance(items, list) else [], question), kind if kind in KINDS else None
+    return parse_terms(raw, question), None
+
+
 def parse_terms(raw: str, question: str = "") -> list[str]:
     """LLM 출력에서 JSON 배열을 꺼낸다. 형식이 틀리면 빈 목록."""
     start, end = raw.find("["), raw.rfind("]")
@@ -163,6 +199,10 @@ def parse_terms(raw: str, question: str = "") -> list[str]:
         return []
     if not isinstance(items, list):
         return []
+    return _clean_terms(items, question)
+
+
+def _clean_terms(items: list, question: str) -> list[str]:
     terms: list[str] = []
     for item in items:
         if not isinstance(item, str):
@@ -189,6 +229,8 @@ class QueryExpander:
         self.last_cached: bool = False
         self.last_error: str | None = None
         self.last_weights: dict[str, float] | None = None  # 말별 가중치 (union2만. None이면 모두 같은 가중치)
+        # 마지막 질문을 LLM이 본 종류: code | general | None (판정 없음·실패·strict). 넓히기와 같은 호출에서 받는다
+        self.last_kind: str | None = None
         self._hints: dict[str, str] = {}
 
     @property
@@ -219,41 +261,51 @@ class QueryExpander:
             self._hints = {key: project_hints(conn)}
         return self._hints[key]
 
-    def _read(self, path: Path) -> list[list[str]] | None:
-        """캐시에 둔 넓히기 결과 (실행별 목록). 없거나 깨졌으면 None."""
+    def _read(self, path: Path) -> tuple[list[list[str]], list[str | None]] | None:
+        """캐시에 둔 넓히기 결과 (실행별 목록, 실행별 질문 종류). 없거나 깨졌으면 None."""
         if not path.is_file():
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             runs = data["runs"] if self.repeats > 1 else [data["terms"]]
-            return [list(terms) for terms in runs]
+            kinds = data.get("kinds") if self.repeats > 1 else [data.get("kind")]
+            if not isinstance(kinds, list) or len(kinds) != len(runs):
+                kinds = [None] * len(runs)
+            return [list(terms) for terms in runs], [k if k in KINDS else None for k in kinds]
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
     def expand(self, conn: sqlite3.Connection, question: str) -> list[str]:
         """넓힌 말 목록. 대상이 적힌 질문, LLM 없음, 실패면 빈 목록 (조용히)."""
         started = time.perf_counter()
-        self.last_cached, self.last_error, self.last_weights = False, None, None
+        self.last_cached, self.last_error, self.last_weights, self.last_kind = False, None, None, None
         try:
             if not question.strip() or is_targeted(question) or not self.available:
                 return []
             path = self.cache / f"{self._key(conn, question)}.json"
-            runs = self._read(path) if self.use_cache else None
-            self.last_cached = runs is not None
-            if runs is None:
+            cached = self._read(path) if self.use_cache else None
+            self.last_cached = cached is not None
+            if cached is None:
                 user = f"{self.hints(conn)}\n\n질문: {question.strip()}"
                 messages = [{"role": "system", "content": self.prompt}, {"role": "user", "content": user}]
-                runs = [parse_terms(self.client.chat(messages), question) for _ in range(self.repeats)]
+                outputs = [parse_output(self.client.chat(messages), question) for _ in range(self.repeats)]
+                runs, kinds = [o[0] for o in outputs], [o[1] for o in outputs]
+            else:
+                runs, kinds = cached
+            # 여러 번 물었으면(union2) 모두 general일 때만 general, 하나라도 code면 code
+            self.last_kind = ("general" if all(k == "general" for k in kinds) else
+                              "code" if "code" in kinds else None)
             if self.repeats > 1:
                 terms, self.last_weights = union_terms(runs)
             else:
                 terms = runs[0]
             if self.use_cache and not self.last_cached:
-                record = {"question": question, "model": getattr(self.client, "model", ""), "terms": terms}
+                record = {"question": question, "model": getattr(self.client, "model", ""), "terms": terms,
+                          "kind": self.last_kind}
                 if self.variant != "default":
                     record["variant"] = self.variant
                 if self.repeats > 1:
-                    record["runs"] = runs
+                    record["runs"], record["kinds"] = runs, kinds
                 try:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
@@ -261,7 +313,7 @@ class QueryExpander:
                     pass
             return terms
         except Exception as e:  # LLM 오류·시간 초과 등: 검색은 넓히기 없이 그대로
-            self.last_error = str(e)[:200]
+            self.last_error, self.last_kind = str(e)[:200], None
             return []
         finally:
             self.last_seconds = time.perf_counter() - started

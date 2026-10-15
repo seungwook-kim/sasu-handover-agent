@@ -156,6 +156,8 @@ class JavaClass:
     explicit_stereotype: str | None = None
     table_name: str | None = None  # ORM 모델이 매핑하는 테이블
     repository_entity: str | None = None  # Spring Data: interface XRepository extends JpaRepository<Order, Long> → Order
+    # Python(Django): {"model": Meta 옵션, "attrs": label·model 같은 클래스 상수, "loaded": self.x = get_class(...)}
+    py_info: dict = field(default_factory=dict)
 
     @property
     def fqcn(self) -> str:

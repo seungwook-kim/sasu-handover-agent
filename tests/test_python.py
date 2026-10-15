@@ -332,3 +332,180 @@ def delete_order(session, order_id):
     assert ("create_order", "ORM Order", "insert") in linked
     assert ("rename_order", "ORM Order", "update") in linked
     assert ("delete_order", "ORM Order", "delete") in linked
+
+
+# django-oscar처럼 재사용 앱으로 만든 Django: 추상 모델 + if 안의 실제 모델, 앱 설정의 get_urls(), get_class·get_model
+DJANGO_APPS = {
+    "manage.py": "",
+    "urls.py": """
+from django.apps import apps
+from django.urls import include, path
+
+urlpatterns = [
+    path("", include(apps.get_app_config("shop").urls[0])),
+]
+""",
+    "shop/__init__.py": "",
+    "shop/config.py": """
+from django.apps import apps
+from django.urls import path
+from shop.core.application import AppConfigBase
+
+class Shop(AppConfigBase):
+    name = "shop"
+
+    def ready(self):
+        self.basket_app = apps.get_app_config("basket")
+
+    def get_urls(self):
+        urls = [
+            path("basket/", self.basket_app.urls),
+        ]
+        return urls
+""",
+    "shop/core/__init__.py": "",
+    "shop/core/application.py": """
+from django.apps import AppConfig
+
+class AppConfigBase(AppConfig):
+    def get_urls(self):
+        return []
+""",
+    "shop/apps/__init__.py": "",
+    "shop/apps/basket/__init__.py": "",
+    "shop/apps/basket/apps.py": """
+from django.contrib.auth.decorators import login_required
+from django.urls import path
+from shop.core.application import AppConfigBase
+from shop.core.loading import get_class
+
+class BasketConfig(AppConfigBase):
+    label = "basket"
+    name = "shop.apps.basket"
+
+    def ready(self):
+        self.add_view = get_class("basket.views", "BasketAddView")
+        self.saved_view = get_class("basket.views", "SavedView")
+
+    def get_urls(self):
+        return [
+            path("add/<int:pk>/", self.add_view.as_view(), name="add"),
+            path("saved/", login_required(self.saved_view.as_view()), name="saved"),
+        ]
+""",
+    "shop/apps/basket/abstract_models.py": '''
+from django.db import models
+
+class AbstractBasket(models.Model):
+    """장바구니"""
+    status = models.CharField(max_length=10)
+
+    class Meta:
+        abstract = True
+        app_label = "basket"
+
+    def add_product(self, product, quantity=1):
+        """상품을 담는다. 같은 상품이면 수량만 늘린다"""
+        line, created = self.lines.get_or_create(product=product)
+        self.save()
+
+class AbstractLine(models.Model):
+    basket = models.ForeignKey("basket.Basket", on_delete=models.CASCADE, related_name="lines")
+
+    class Meta:
+        abstract = True
+        app_label = "basket"
+''',
+    "shop/apps/basket/models.py": """
+from shop.apps.basket.abstract_models import AbstractBasket, AbstractLine
+from shop.core.loading import is_model_registered
+
+if not is_model_registered("basket", "Basket"):
+    class Basket(AbstractBasket):
+        pass
+
+if not is_model_registered("basket", "Line"):
+    class Line(AbstractLine):
+        pass
+""",
+    "shop/apps/basket/views.py": """
+from django.views import generic
+from shop.core.loading import get_model
+
+Line = get_model("basket", "Line")
+
+class BasketAddView(generic.FormView):
+    def form_valid(self, form):
+        self.request.basket.add_product(form.product)
+        return super().form_valid(form)
+
+class SavedView(generic.ListView):
+    model = Line
+    template_name = "basket/saved.html"
+""",
+    "shop/templates/basket/saved.html": "<h1>saved</h1>",
+    "shop/apps/order/__init__.py": "",
+    "shop/apps/order/models.py": """
+from django.db import models
+
+class Line(models.Model):
+    title = models.CharField(max_length=10)
+""",
+    "shop/apps/order/utils.py": """
+from shop.core.loading import get_model
+
+Line = get_model("order", "Line")
+
+def copy_lines():
+    return Line.objects.all()
+""",
+}
+
+
+def test_parser_django_reusable_app():
+    abstract = parse_python(DJANGO_APPS["shop/apps/basket/abstract_models.py"].encode(), "shop.apps.basket.abstract_models")
+    basket = next(c for c in abstract.classes if c.name == "AbstractBasket")
+    assert basket.table_name is None  # abstract = True는 테이블이 없다
+    assert basket.py_info["model"]["app_label"] == "basket"
+    line = next(c for c in abstract.classes if c.name == "AbstractLine")
+    assert line.py_info["relations"] == {"lines": "basket"}
+    models = parse_python(DJANGO_APPS["shop/apps/basket/models.py"].encode(), "shop.apps.basket.models")
+    assert [c.name for c in models.classes] == ["models", "Basket", "Line"]  # if not is_model_registered(...) 안
+    config = parse_python(DJANGO_APPS["shop/apps/basket/apps.py"].encode(), "shop.apps.basket.apps")
+    assert {(u.route, u.target) for u in config.url_patterns} == {
+        ("add/<int:pk>/", "self.add_view.as_view()"), ("saved/", "login_required(self.saved_view.as_view())")}
+    cls = next(c for c in config.classes if c.name == "BasketConfig")
+    assert cls.py_info["attrs"]["label"] == "basket"
+    assert cls.py_info["loaded"]["add_view"] == ["get_class", "basket.views", "BasketAddView"]
+    views = parse_python(DJANGO_APPS["shop/apps/basket/views.py"].encode(), "shop.apps.basket.views")
+    saved = next(c for c in views.classes if c.name == "SavedView")
+    assert [m.name for m in saved.methods] == ["<class>"]  # 메서드 없는 클래스 뷰도 URL을 걸 곳이 있다
+
+
+def test_django_reusable_app_urls_models_and_orm(tmp_path):
+    conn = _index(tmp_path, DJANGO_APPS)
+    # 루트 urls.py → include(get_app_config("shop")) → Shop.get_urls → self.basket_app.urls → BasketConfig.get_urls
+    assert _urls(conn) == ["/basket/add/<int:pk>", "/basket/saved"]
+    tables = dict(conn.execute("SELECT name, table_name FROM classes WHERE name IN ('Basket', 'AbstractBasket')").fetchall())
+    assert tables == {"Basket": "basket_basket", "AbstractBasket": None}
+    add = _labels(conn, "/basket/add/<int:pk>")
+    assert ("method", "BasketAddView.form_valid") in add
+    assert ("method", "AbstractBasket.add_product") in add  # request.basket → Basket 모델 → 추상 부모의 메서드
+    assert ("statement", "INSERT ORM basket.Line") in add  # self.lines.get_or_create → related_name="lines"
+    assert ("statement", "UPDATE ORM Basket") in add  # 추상 모델의 self.save() → 실제 모델 테이블
+    saved = _labels(conn, "/basket/saved")
+    assert ("method", "SavedView.<class>") in saved
+    assert ("statement", "SELECT ORM basket.Line") in saved  # model = Line (get_model("basket", "Line"))
+    assert ("view", "shop/templates/basket/saved.html") in saved  # template_name
+    from sasu.analysis.overview import class_modules
+
+    view_id = conn.execute("SELECT id FROM classes WHERE name = 'BasketAddView'").fetchone()[0]
+    assert class_modules(conn)[view_id] == "basket"  # 지도·동작 목록은 Django 앱(apps.py 폴더) 단위
+    linked = {(r["name"], r["full_id"]) for r in conn.execute(
+        """SELECT m.name, s.full_id FROM edges e JOIN methods m ON m.id = e.src_id
+           JOIN statements s ON s.id = e.dst_id WHERE e.dst_kind = 'statement'""")}
+    assert ("copy_lines", "ORM order.Line") in linked  # 같은 이름 Line이어도 get_model("order", ...) 쪽
+    order_line = conn.execute(
+        "SELECT t.table_name FROM statements s JOIN statement_tables t ON t.statement_id = s.id WHERE s.full_id = 'ORM order.Line'"
+    ).fetchone()[0]
+    assert order_line == "ORDER_LINE"

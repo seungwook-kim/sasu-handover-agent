@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sasu.analysis.common import analyze_common
+from sasu.analysis.django_signals import NARROW_EXCEPTIONS, django_signals
 from sasu.analysis.unused import find_unused
 
 # 흔해서 따로 물을 필요가 없는 조건 값
@@ -33,17 +34,36 @@ _COMMON_WORDS = {
     "http", "https", "insert", "update", "select", "detail", "list", "session", "password", "popup", "up",
     "down", "class", "method", "json", "xml", "html", "text", "file", "user", "admin", "test", "debug",
     "true", "false", "yes", "no", "on", "off", "asc", "desc", "all", "create", "read", "remove", "save",
+    # 화면 버튼·형식 이름 (action == "continue", format == "csv")
+    "continue", "cancel", "submit", "next", "back", "prev", "previous", "ok", "csv", "xls", "xlsx", "pdf",
+    "format", "final", "error", "success", "warning", "info", "action", "edit", "view", "add", "new", "copy",
 }
 
 
 
-def is_code_value(value: str, lang: str, source: str) -> bool:
+def is_code_value(value: str, lang: str, source: str, names: set[str] | frozenset = frozenset()) -> bool:
     """조건에 쓰인 값이 업무 코드처럼 보이나 (USR03, '09', Python의 "partial_refund").
-    뻔한 값(Y/N, 0/1, 경로, 클래스 이름)과 너무 긴 문자열은 뺀다."""
+    뻔한 값(Y/N, 0/1, 경로, 클래스 이름)과 너무 긴 문자열은 뺀다.
+    Python은 같은지 비교한 값만 보고(self.value > 100, x.startswith("X")는 기준·접두어), names(프로젝트의
+    필드·속성 이름: field == "title")와 같은 값도 뺀다. Java 판단은 그대로다."""
     v = value.strip("'\"")
     if v in _TRIVIAL_VALUES or len(v) > 40 or _SELF_EXPLANATORY.match(v):
         return False
+    if lang == "python":
+        if v in names or v.lower() in _COMMON_WORDS:
+            return False
+        return (bool(_BUSINESS_CODE.match(v)) or bool(_LOWER_CODE.match(v))) and _compared_as_code(v, source)
     return bool(_BUSINESS_CODE.match(v)) or _python_code(v, lang, source)
+
+
+def python_field_names(conn: sqlite3.Connection) -> set[str]:
+    """Python 클래스의 필드·속성·메서드 이름 (title = models.CharField, def salutation). 조건의 field == "title"이나
+    action == "place_order"는 업무 코드 값이 아니라 코드 안의 이름을 비교한 것이다."""
+    return {r["name"] for r in conn.execute(
+        """SELECT DISTINCT fl.name FROM fields fl JOIN classes c ON c.id = fl.class_id JOIN files f ON f.id = c.file_id
+           WHERE f.kind = 'python' AND c.kind = 'class'
+           UNION SELECT DISTINCT m.name FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+           WHERE f.kind = 'python'""")}
 
 
 def _python_code(value: str, lang: str, source: str) -> bool:
@@ -83,6 +103,15 @@ BASE = {
     "copied_code": 45,
     "complex": 70,
     "unused_sql": 30,
+    # Python(Django): 코드 흐름에 보이지 않게 동작을 바꾸는 장치 (analysis/django_signals.py)
+    "signal": 75,
+    "raw_sql": 70,
+    "setting_branch": 65,
+    "hidden_filter": 65,
+    "batch_job": 55,
+    "request_hook": 40,  # 영향 범위가 "모든 URL"이라 기본 점수는 낮게
+    "transaction": 55,
+    "swappable_class": 40,
 }
 
 KIND_LABEL = {
@@ -95,6 +124,15 @@ KIND_LABEL = {
     "copied_code": "복사한 코드",
     "complex": "복잡한 분기",
     "unused_sql": "미사용 SQL",
+    "signal": "시그널 처리",
+    "raw_sql": "직접 쓴 SQL",
+    "setting_branch": "설정값 분기",
+    "hidden_filter": "숨은 조회 조건",
+    "batch_job": "배치·관리 명령",
+    "request_hook": "요청마다 실행",
+    "transaction": "트랜잭션 경계",
+    "swappable_class": "교체 가능한 클래스",
+    "doc_check": "문서 확인",  # 인수인계 문서와 코드가 다른 값을 말함 (sasu.docs.conflicts)
 }
 
 
@@ -117,20 +155,22 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
         r["id"]: r
         for r in conn.execute(
             """SELECT m.id, m.name, m.line_start, m.complexity, c.id AS class_id, c.name AS class_name,
-                      c.stereotype, f.path
+                      c.stereotype, f.path, f.kind AS lang
                FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id"""
         )
     }
 
-    def weight(method_id: int | None) -> float:
+    def weight(method_id: int | None, reach_override: int | None = None) -> float:
         if method_id is None:
             return 1.0
         m = methods[method_id]
-        n = reach.get(method_id, 0)
+        n = reach.get(method_id, 0) if reach_override is None else reach_override
         reach_factor = (1 + math.log2(1 + n)) if n else 0.5
         # 복잡한 메서드일수록 사람에게 물어볼 가치가 크다 (과거 기록 평가에서 가장 강한 신호)
         complexity_factor = 1 + math.log2(max(m["complexity"], 1))
-        return reach_factor * complexity_factor * _STEREOTYPE_FACTOR.get(m["stereotype"], _UTIL_FACTOR)
+        # 영향 범위를 따로 준 신호(시그널·미들웨어·배치)는 그 코드가 놓인 계층과 상관없이 영향이 크다
+        layer = 1.0 if reach_override is not None else _STEREOTYPE_FACTOR.get(m["stereotype"], _UTIL_FACTOR)
+        return reach_factor * complexity_factor * layer
 
     def target(mid: int) -> str:
         m = methods[mid]
@@ -139,12 +179,13 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
     found: list[Question] = []
 
     def add(kind: str, key_detail: str, mid: int | None, question: str, why: str,
-            file_path: str | None = None, line: int | None = None, target_name: str | None = None) -> None:
+            file_path: str | None = None, line: int | None = None, target_name: str | None = None,
+            reach_override: int | None = None, factor: float = 1.0) -> None:
         m = methods.get(mid) if mid is not None else None
         found.append(Question(
             key=f"{kind}|{(m['path'] if m else file_path) or ''}|{target(mid) if m else target_name or ''}|{key_detail}",
             kind=kind,
-            priority=round(BASE[kind] * weight(mid), 1),
+            priority=round(BASE[kind] * weight(mid, reach_override) * factor, 1),
             question=question,
             why=why,
             file_path=m["path"] if m and not file_path else file_path,
@@ -194,6 +235,7 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
             f"{n['tag']} 표시가 있는 주석 ({n['line']}번째 줄)", line=n["line"])
 
     # 4. 드문 값으로 분기하는 조건 (매직 값)
+    field_names = python_field_names(conn)
     value_methods: Counter = Counter()
     for r in conn.execute("SELECT value, COUNT(DISTINCT method_id) AS n FROM condition_literals GROUP BY value"):
         value_methods[r["value"]] = r["n"]
@@ -204,7 +246,8 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
            JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
            ORDER BY cl.line"""
     ):
-        if value_methods[r["value"]] > _RARE_VALUE_MAX_METHODS or not is_code_value(r["value"], r["lang"], r["source"]):
+        if value_methods[r["value"]] > _RARE_VALUE_MAX_METHODS or \
+                not is_code_value(r["value"], r["lang"], r["source"], field_names):
             continue
         per_method[r["method_id"]].append(r)
     for mid, rows in per_method.items():
@@ -231,19 +274,30 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
             f"빈: {', '.join(beans[:6])}{' 외' if len(beans) > 6 else ''}. 쓰는 곳 {len(users)}개",
             line=best["line"])
 
-    # 6. 무시하는 예외
+    # 6. 무시하는 예외. Python은 계층(스테레오타입)이 잘 안 잡혀 모델·폼·시그널 쪽도 본다
     for r in conn.execute(
-        """SELECT e.method_id, e.exception_type, e.line FROM empty_catches e
-           JOIN methods m ON m.id = e.method_id JOIN classes c ON c.id = m.class_id
-           WHERE c.stereotype IS NOT NULL"""
+        """SELECT e.method_id, e.exception_type, e.line, f.kind AS lang FROM empty_catches e
+           JOIN methods m ON m.id = e.method_id JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+           WHERE c.stereotype IS NOT NULL OR f.kind = 'python'"""
     ):
-        add("empty_catch", f"{r['exception_type']}:{r['line']}", r["method_id"],
-            f"{r['exception_type'] or '예외'}를 잡고 아무것도 하지 않습니다. 실패해도 괜찮은 이유가 있나요?",
-            f"비어 있는 catch 블록 ({r['line']}번째 줄)", line=r["line"])
+        exc = r["exception_type"]
+        python = r["lang"] == "python"
+        types = [t.strip() for t in exc.strip("() ").split(",") if t.strip()]
+        if python and (not types or set(types) <= {"Exception", "BaseException"}):
+            question = "모든 예외를 잡고 아무것도 하지 않습니다(except: pass). 어떤 실패를 무시하려는 것이고, 숨겨지는 오류는 없나요?"
+        else:
+            question = f"{exc or '예외'}를 잡고 아무것도 하지 않습니다. 실패해도 괜찮은 이유가 있나요?"
+        # Python의 "없으면 넘어감"(DoesNotExist·KeyError)은 흔한 관례라 모든 예외를 삼키는 것보다 뒤로
+        narrow = python and bool(types) and all(NARROW_EXCEPTIONS.search(t) for t in types)
+        add("empty_catch", f"{exc}:{r['line']}", r["method_id"], question,
+            f"비어 있는 {'except' if python else 'catch'} 블록 ({r['line']}번째 줄)", line=r["line"],
+            factor=0.5 if narrow else 1.0)
 
     # 7. 복잡한 분기
     for mid, m in methods.items():
-        if m["complexity"] >= _COMPLEXITY_THRESHOLD and m["stereotype"] in ("Controller", "Service", "Repository", "Component"):
+        # Python은 모델·폼·매니저에도 업무 규칙이 많아 계층과 상관없이 본다 (<module>은 파일 최상위 문장 묶음이라 뺀다)
+        layered = m["stereotype"] in ("Controller", "Service", "Repository", "Component")
+        if m["complexity"] >= _COMPLEXITY_THRESHOLD and (layered or (m["lang"] == "python" and m["name"] != "<module>")):
             add("complex", str(m["complexity"]), mid,
                 f"분기가 많습니다 (순환 복잡도 {m['complexity']}). 꼭 알아야 할 규칙과 예외 케이스는 무엇인가요?",
                 "조건·반복·예외 처리가 많아 흐름을 읽기 어려운 메서드")
@@ -266,6 +320,10 @@ def generate_questions(conn: sqlite3.Connection) -> list[Question]:
         add("unused_sql", f.name, None,
             f"쿼리 {f.name}는 부르는 곳이 없습니다. 지워도 되나요, 다른 시스템이 쓰나요?",
             f"수정 이력: {f.evidence}", path, int(line), f.name)
+
+    # 10. Python(Django): 시그널·미들웨어·설정값 분기·숨은 조회 조건·배치·raw SQL·트랜잭션·get_class
+    for d in django_signals(conn, reach):
+        add(d.kind, d.key_detail, d.method_id, d.question, d.why, d.file_path, d.line, d.target, reach_override=d.reach)
 
     # 여러 종류의 신호가 겹친 메서드(드문 값 분기 + 복잡한 분기 + 무시하는 예외 …)일수록 먼저 묻는다
     kinds_per_method: dict[int, set[str]] = defaultdict(set)

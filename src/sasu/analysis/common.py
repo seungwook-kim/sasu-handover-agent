@@ -68,9 +68,10 @@ def analyze_common(conn: sqlite3.Connection, top: int = 20) -> CommonReport:
                FROM classes c JOIN files f ON f.id = c.file_id"""
         )
     }
-    packages = {cid: c["fqcn"].rsplit("." + c["name"], 1)[0] for cid, c in classes.items()}
-    root = package_root(list(set(packages.values())))
-    modules = {cid: module_of(pkg, root) for cid, pkg in packages.items()}
+    from sasu.analysis.overview import class_modules  # overview가 이 모듈을 불러 순환을 피한다
+
+    # Java는 패키지 뿌리 다음 두 단계, Django는 앱(apps.py가 있는 폴더) 단위 (basket, dashboard.orders)
+    modules = class_modules(conn)
 
     # 1. 여러 모듈이 부르는 클래스
     method_class = {r["id"]: r["class_id"] for r in conn.execute("SELECT id, class_id FROM methods")}

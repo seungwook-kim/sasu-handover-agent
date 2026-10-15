@@ -85,3 +85,30 @@ def _line_starts(text: str) -> list[int]:
 
 def _line_of(starts: list[int], pos: int) -> int:
     return bisect.bisect_right(starts, pos)
+
+
+# Django·Jinja 템플릿: {% url 'basket:summary' %}, {% include "x.html" %}, {{ basket.num_lines }}
+_TPL_URL = re.compile(r"""\{%-?\s*url\s+["']([\w:-]+)["']""")
+_TPL_FILE = re.compile(r"""\{%-?\s*(?:include|extends|import|from)\s+["']([^"']+)["']""")
+_TPL_BLOCK = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.DOTALL)
+_TPL_ATTR = re.compile(r"\.([A-Za-z_]\w*)")
+
+
+def extract_template_refs(text: str) -> list[Ref]:
+    """Django·Jinja 템플릿이 가리키는 것. urlname: URL 이름, template: 포함·상속하는 템플릿,
+    attr: {{ obj.method }}처럼 괄호 없이 부르는 메서드·속성 이름 (파일마다 한 번)."""
+    if "{%" not in text and "{{" not in text:
+        return []
+    refs: list[Ref] = []
+    line_starts = _line_starts(text)
+    for m in _TPL_URL.finditer(text):
+        refs.append(Ref("urlname", m.group(1), _line_of(line_starts, m.start())))
+    for m in _TPL_FILE.finditer(text):
+        refs.append(Ref("template", m.group(1), _line_of(line_starts, m.start())))
+    attrs: dict[str, int] = {}
+    for block in _TPL_BLOCK.finditer(text):
+        inner = re.sub(r"""(["']).*?\1""", "", block.group(0))  # 문자열 안의 점(파일 이름 등)은 빼고
+        for m in _TPL_ATTR.finditer(inner):
+            attrs.setdefault(m.group(1), _line_of(line_starts, block.start()))
+    refs.extend(Ref("attr", name, line) for name, line in attrs.items())
+    return refs

@@ -12,9 +12,10 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sasu.analysis.django_signals import behavior_hints
 from sasu.analysis.labels import Labels
 from sasu.analysis.overview import class_modules
-from sasu.analysis.questions import is_code_value
+from sasu.analysis.questions import is_code_value, python_field_names
 from sasu.trace import trace_url
 
 _WRITE_LABEL = {"INSERT": "등록", "UPDATE": "수정", "DELETE": "삭제", "MERGE": "저장", "CALL": "프로시저"}  # MERGE: JPA save·MERGE INTO
@@ -36,6 +37,9 @@ class Behavior:
     external: list[str] = field(default_factory=list)  # 저장소 밖 빈·동적 쿼리 등 확인이 필요한 연결
     methods: int = 0
     label: str | None = None  # 한글 기능 이름 "휴가관리 · 휴가를 등록한다" (주석에 없으면 None)
+    business: str | None = None  # 처리 메서드 클래스의 업무명 "휴가관리" (인수인계서가 업무별로 묶는다)
+    sqls: list[str] = field(default_factory=list)  # 거치는 SQL "INSERT Vcatn.insertVcatnManage"
+    targets: list[str] = field(default_factory=list)  # 거치는 Class.method·쿼리 ID (질문 대상과 맞춘다)
 
 
 def list_behaviors(conn: sqlite3.Connection, module: str | None = None,
@@ -49,6 +53,8 @@ def list_behaviors(conn: sqlite3.Connection, module: str | None = None,
         r["target"]: r for r in conn.execute(
             "SELECT target, question, answer, answered_by FROM questions WHERE answer IS NOT NULL AND status != 'skipped' AND stale = 0")
     }
+    names_in_code = python_field_names(conn)  # Python: field == "title" 같은 이름 비교는 업무 코드 분기가 아니다
+    hints = behavior_hints(conn)  # Django: 설정값 분기, 이 처리가 일으키는 시그널과 받는 쪽 (Java는 비어 있음)
     result = []
     for r in conn.execute(
         """SELECT u.url, MIN(m.id) AS method_id, c.id AS class_id, c.name AS class_name, m.name AS method_name,
@@ -62,17 +68,21 @@ def list_behaviors(conn: sqlite3.Connection, module: str | None = None,
         if business and names.class_label(r["class_id"]) != business.strip():
             continue
         b = Behavior(module=mod, url=r["url"], handler=f"{r['class_name']}.{r['method_name']}",
-                     location=f"{r['path']}:{r['line_start']}", label=names.full(r["method_id"]))
+                     location=f"{r['path']}:{r['line_start']}", label=names.full(r["method_id"]),
+                     business=names.class_label(r["class_id"]))
         writes: dict[str, list[str]] = {}
         method_ids = []
         for node in trace_url(conn, r["url"]).walk():
             if node.kind == "method" and node.method_id is not None and not node.repeated:
                 method_ids.append(node.method_id)
+                _add(b.targets, node.label)
                 answer = labels_with_answers.get(node.label)
                 if answer is not None:
                     _add(b.answers, f"{node.label}: {answer['answer']}" + (f" ({answer['answered_by']})" if answer["answered_by"] else ""))
             elif node.kind == "statement":
                 verb = node.label.split(" ", 1)[0]
+                _add(b.sqls, node.label)
+                _add(b.targets, node.label.split(" ", 1)[-1])
                 for table in filter(None, (node.detail or "").split(", ")):
                     if verb == "SELECT":
                         _add(b.reads, table)
@@ -95,12 +105,15 @@ def list_behaviors(conn: sqlite3.Connection, module: str | None = None,
                 f"SELECT method_id, value, source FROM condition_literals WHERE method_id IN ({marks}) ORDER BY method_id, line",
                 method_ids,
             ):
-                if is_code_value(c["value"], lang.get(c["method_id"], "java"), c["source"]):
+                if is_code_value(c["value"], lang.get(c["method_id"], "java"), c["source"], names_in_code):
                     _add(b.branches, f"{_branch_label(c['value'], c['source'])} ← {c['source'][:80]}")
             for n in conn.execute(
                 f"SELECT tag, text FROM notes WHERE method_id IN ({marks}) ORDER BY method_id, line", method_ids,
             ):
                 _add(b.notes, n['text'][:100])  # 주석 글에 TODO 같은 표시가 이미 들어 있다
+            for mid in method_ids:
+                for kind, text in hints.get(mid, []):
+                    _add(b.branches if kind == "branch" else b.external, text)
         result.append(b)
     return result
 

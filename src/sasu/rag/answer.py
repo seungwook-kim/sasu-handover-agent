@@ -7,6 +7,7 @@
 - LLM이 설정되지 않았으면 근거만 보여 준다.
 
 LLM은 OpenAI 호환 주소 하나로 연결한다 (개발: OpenRouter, 현장: 사내 LLM 서버).
+개발용으로 claude CLI(claude-code)나 Claude API(anthropic, SASU_ANTHROPIC_API_KEY)도 쓸 수 있다.
 """
 
 import json
@@ -19,9 +20,9 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from sasu.config import Settings
-from sasu.rag.evidence import ANSWER, FACT, Evidence
+from sasu.rag.evidence import ANSWER, DOC, FACT, Evidence
 
-LABELS = {"사실": FACT, "답변": ANSWER, "추정": None}
+LABELS = {"사실": FACT, "답변": ANSWER, "추정": None, "문서": DOC}
 
 SYSTEM_PROMPT = """너는 SI 프로젝트 인수인계를 돕는 '사수'다. 떠난 개발자 대신, 주어진 근거만으로 답한다.
 
@@ -39,6 +40,17 @@ SYSTEM_PROMPT = """너는 SI 프로젝트 인수인계를 돕는 '사수'다. �
 7. 인수인계 답변이 코드에서 확인되는 동작과 어긋나 보이면 답변을 코드에 억지로 맞춰 해석하지 않는다.
    어긋나는 점을 [추정]으로 짚고, 마지막 줄에 "물어볼 질문: …"으로 어느 쪽이 맞는지 확인할 질문을 쓴다.
    (사람의 기억은 틀릴 수 있고, 답한 뒤 코드가 바뀌었을 수도 있다)"""
+
+# 근거에 인수인계 문서 조각('문서')이 있을 때만 시스템 규칙에 더한다 (문서가 없는 답은 예전 그대로)
+DOC_RULES = """
+8. '문서' 근거는 전임자가 남긴 인수인계 문서 조각이다. 오래됐을 수 있어 코드보다 낮게 믿는다.
+   - 문서에만 있는 내용은 [문서]로 시작해 "문서에 따르면 …"으로 쓰고 문서 근거 번호를 단다.
+   - 문서 내용이 '확인된 사실' 근거로 확인되면 [사실]로 쓰되 코드 근거 번호를 단다. 문서만으로 [사실]을 쓰지 않는다.
+9. 같은 대상에 대해 문서와 코드가 다른 값(숫자·상태 값·테이블·URL)을 말하면
+   "[추정] 문서와 코드가 달라요: 문서는 …, 코드는 …" 한 줄을 쓰고 (문서·코드 근거 번호),
+   마지막 줄 "물어볼 질문: …"으로 어느 쪽이 지금 맞는지 묻는다."""
+
+DOC_CONFLICT = "문서와 코드가 달라요"
 
 
 class LLMError(RuntimeError):
@@ -134,9 +146,95 @@ class ClaudeCodeClient:
         return data.get("result") or ""
 
 
+# claude CLI에서 쓰던 짧은 이름을 그대로 적어도 API 모델 ID로 바꿔 준다
+CLAUDE_ALIASES = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+
+
+def claude_model(name: str, default: str) -> str:
+    name = (name or "").strip()
+    return CLAUDE_ALIASES.get(name.lower(), name) or default
+
+
+class AnthropicClient:
+    """공식 anthropic SDK(선택 의존성: uv sync --extra anthropic)로 Claude API를 직접 부른다.
+
+    - 키는 SASU_ANTHROPIC_API_KEY에서 읽어 SDK 클라이언트에 직접 넘긴다. ANTHROPIC_API_KEY로 내보내지 않는다
+      (claude CLI가 그 이름을 보면 구독 로그인 대신 API 요금으로 바뀐다).
+    - temperature는 보내지 않는다. Claude Haiku 5.5·Sonnet 5.5·Opus 5.5는 기본값이 아닌 temperature·top_p·top_k를
+      400으로 거절한다 (temperature는 1만 받음). 흔들림은 프롬프트·캐시로 줄인다.
+    - effort: low|medium|high|xhigh|max (비우면 모델 기본값). thinking: "disabled"면 생각을 끈다
+      (Haiku 5.5는 effort high 이하에서만 받는다). 비우면 adaptive(모델 기본).
+    """
+
+    DEFAULT_MODEL = "claude-opus-5-5"
+
+    def __init__(self, api_key: str, model: str = "", effort: str | None = None, thinking: str | None = None,
+                 max_tokens: int = 16000, timeout: float = 90.0):
+        self.api_key = api_key
+        self.model = claude_model(model, self.DEFAULT_MODEL)
+        self.effort = effort
+        self.thinking = thinking
+        self.max_tokens = max_tokens
+        self.timeout = timeout
+        self.last_cost_usd: float | None = None  # 웹 화면 호환 (API는 비용을 돌려주지 않는다)
+        self._client = None
+
+    @property
+    def available(self) -> bool:
+        if not self.api_key:
+            return False
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _sdk(self):
+        if self._client is None:
+            import anthropic
+
+            self._client = anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout, max_retries=2)
+        return self._client
+
+    def request(self, messages: list[dict]) -> dict:
+        """messages.create에 넘길 값 (테스트에서 확인하려고 따로 둔다)."""
+        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"],
+        }
+        if system:
+            kwargs["system"] = system
+        if self.effort:
+            kwargs["output_config"] = {"effort": self.effort}
+        if self.thinking:
+            kwargs["thinking"] = {"type": self.thinking}
+        return kwargs
+
+    def chat(self, messages: list[dict]) -> str:
+        import anthropic
+
+        try:
+            response = self._sdk().messages.create(**self.request(messages))
+        except anthropic.APIStatusError as e:
+            raise LLMError(f"Claude API 요청 실패 ({e.status_code}): {str(e.message)[:300]}") from e
+        except anthropic.APIConnectionError as e:  # 시간 초과 포함
+            raise LLMError(f"Claude API에 연결할 수 없음: {e}") from e
+        if response.stop_reason == "refusal":
+            raise LLMError("Claude API가 이 요청에 답하지 않음 (refusal)")
+        # 생각(thinking) 블록이 앞에 올 수 있어 순서가 아니라 종류로 글을 꺼낸다
+        text = "".join(block.text for block in response.content if block.type == "text")
+        if not text and response.stop_reason == "max_tokens":
+            raise LLMError(f"Claude API 응답이 max_tokens({self.max_tokens})에서 잘림")
+        return text
+
+
 def make_llm_client(settings: Settings):
     if settings.llm_provider == "claude-code":
         return ClaudeCodeClient(settings.llm_model)
+    if settings.llm_provider == "anthropic":
+        return AnthropicClient(settings.anthropic_api_key, settings.llm_model)
     return LLMClient(settings)
 
 
@@ -155,6 +253,7 @@ class AnswerResult:
     issues: list[str] = field(default_factory=list)
     model: str | None = None
     raw: str | None = None
+    doc_conflicts: list[str] = field(default_factory=list)  # LLM이 "문서와 코드가 달라요"라고 짚은 문장
 
 
 def build_messages(question: str, target_label: str, evidence: list[Evidence]) -> list[dict]:
@@ -163,7 +262,8 @@ def build_messages(question: str, target_label: str, evidence: list[Evidence]) -
         for e in evidence
     )
     user = f"질문: {question}\n대상 코드: {target_label}\n\n근거:\n{blocks}"
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    system = SYSTEM_PROMPT + (DOC_RULES if any(e.level == DOC for e in evidence) else "")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def answer(question: str, target_label: str, evidence: list[Evidence], client: LLMClient | None) -> AnswerResult:
@@ -172,7 +272,8 @@ def answer(question: str, target_label: str, evidence: list[Evidence], client: L
             mode="evidence_only",
             issues=[
                 "LLM이 설정되지 않아 근거만 보여 줍니다. "
-                ".env에 SASU_LLM_PROVIDER=claude-code(claude CLI 로그인) 또는 SASU_LLM_API_KEY·SASU_LLM_MODEL을 넣으세요."
+                ".env에 SASU_LLM_PROVIDER=claude-code(claude CLI 로그인), anthropic(SASU_ANTHROPIC_API_KEY와 "
+                "uv sync --extra anthropic) 또는 SASU_LLM_API_KEY·SASU_LLM_MODEL을 넣으세요."
             ],
         )
     raw = client.chat(build_messages(question, target_label, evidence))
@@ -195,7 +296,7 @@ def validate(raw: str, evidence: list[Evidence]) -> AnswerResult:
         text = re.sub(r"\s*\((?:\s*E\d+\s*,?\s*)+\)\s*\.?\s*$", "", line)
         if not text.endswith((".", "?", "!", "다", "요")):
             text = text.rstrip() + "."
-        label_match = re.match(r"^\[(사실|답변|추정)\]\s*", text)
+        label_match = re.match(r"^\[(사실|답변|추정|문서)\]\s*", text)
         if text.startswith("모름"):
             result.sentences.append(Sentence("모름", text.split(":", 1)[-1].strip(), cites))
             continue
@@ -207,7 +308,7 @@ def validate(raw: str, evidence: list[Evidence]) -> AnswerResult:
             result.issues.append(f"없는 근거를 인용함: {', '.join(unknown)} → \"{text[:40]}…\"")
         if label is None:
             sentence.downgraded = "표시가 없어 추정으로 봄"
-        elif label in ("사실", "답변"):
+        elif label in ("사실", "답변", "문서"):
             required = LABELS[label]
             valid = [c for c in cites if levels.get(c) == required]
             if not valid:
@@ -216,6 +317,10 @@ def validate(raw: str, evidence: list[Evidence]) -> AnswerResult:
         if not cites and sentence.label != "추정":
             sentence.label = "추정"
             sentence.downgraded = "근거 번호가 없음"
+        if sentence.label == "문서" and "문서에" not in text[:12]:
+            sentence.text = text = f"문서에 따르면 {text}"
+        if DOC_CONFLICT in text:
+            result.doc_conflicts.append(text)
         if sentence.downgraded:
             result.issues.append(f"추정으로 낮춤: {sentence.downgraded} → \"{text[:40]}…\"")
         result.sentences.append(sentence)

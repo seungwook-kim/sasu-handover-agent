@@ -2,6 +2,7 @@
 
 - 기준일: 2026-10-11
 - 기준 코드: `src/sasu/db.py` (스키마 버전 7), `src/sasu/rag/vectors.py`
+- 더함 (2026-10-15): 인수인계 문서 테이블 `documents`·`doc_chunks`·`doc_links`([3.8](#38-인수인계-문서-documents-doc_chunks-doc_links)), 캐시 `query-expand`·`rerank`·`doc-judge`. 스키마 버전은 그대로 7이다(`CREATE TABLE IF NOT EXISTS`, 보존 테이블).
 - 함께 보는 문서: [제품 요구사항 (PRD)](prd.md) · [소프트웨어 설계 (SDD)](sdd.md)
 
 사수는 서버 DB를 쓰지 않는다. 분석한 프로젝트마다 SQLite 파일 하나(`projects/<이름>.db`)에 코드 그래프, 인수인계 질문과 답, 벡터 색인을 모두 담는다. 임베딩 캐시만 프로젝트와 상관없이 따로 둔다.
@@ -15,7 +16,9 @@ SASU_HOME                       기본 ~/.sasu, 이 저장소에서 개발할 �
 ├── projects/
 │   └── <프로젝트 이름>.db       분석 파일: 이 문서 2~4절
 ├── cache/
-│   ├── embeddings.db           임베딩 캐시: 5절
+│   ├── embeddings.db           임베딩 캐시: 5절 (코드 조각·문서 조각 함께)
+│   ├── query-expand/ · rerank/ 질문 넓히기·LLM 재순위 결과 (질문 해시)
+│   ├── doc-judge/              문서–코드 불일치 LLM 판정 결과 (프롬프트 해시)
 │   └── ignore-revs-v2-<HEAD>.txt   git blame에서 건너뛸 포맷 정리·릴리스 커밋 목록
 ├── models/                     로컬 임베딩 모델 파일 (fastembed)
 ├── repos/                      sasu fetch-sample로 받은 예제 저장소
@@ -298,6 +301,28 @@ stateDiagram-v2
 - 분석 결과에서 파생된 것이라, 다시 분석하면 지우고 임베딩 캐시로 다시 만든다.
 - `meta.embed_model`이 지금 설정한 임베딩 모델과 같을 때만 검색에 쓴다.
 
+### 3.8 인수인계 문서 (`documents`, `doc_chunks`, `doc_links`)
+
+`sasu docs add`·웹 업로드로 넣은 문서. 사람이 넣은 데이터라 `questions`처럼 다시 분석해도, 스키마 버전이 바뀌어도 남긴다(`PRESERVED_TABLES`). 원본 파일은 저장하지 않고 비밀을 가린 조각만 둔다. 자세한 규칙은 [인수인계 문서](documents.md).
+
+```mermaid
+erDiagram
+    documents ||--o{ doc_chunks : "doc_id"
+    doc_chunks ||--o{ doc_links : "chunk_id"
+    doc_links }o..o| url_mappings : "kind=url, value = url"
+    doc_links }o..o| methods : "kind=method, value = 클래스.메서드"
+    doc_links }o..o| statement_tables : "kind=table, value = table_name"
+    questions }o..o| doc_chunks : "kind=doc_check (key에 문서 이름)"
+```
+
+| 테이블 | 열 | 뜻 |
+| --- | --- | --- |
+| `documents` | `id` PK, `name` UNIQUE, `format`, `sha1`, `doc_date`, `date_source`, `chunks`, `redactions`(JSON {종류: 가린 수}), `added_at`, `added_by` | 문서 하나. 같은 이름을 다시 넣으면 새 판(조각·연결을 지우고 다시), 내용 해시까지 같으면 건너뜀 |
+| `doc_chunks` | `id` PK, `doc_id`, `seq`, `section`, `heading`, `page`, `text` | 제목 단위 조각 (비밀을 가린 글) |
+| `doc_links` | `chunk_id`, `kind`(url·table·class·method·label·config), `value`, `found` | 조각에 나온 코드 이름. 코드 id가 아니라 이름이라 다시 분석해도 맞고, `sasu index` 끝에 다시 잇는다. `found=0`은 코드에 없는 이름(불일치 후보) |
+
+인덱스: `idx_doc_chunks_doc(doc_id, seq)`, `idx_doc_links(kind, value)`, `idx_doc_links_chunk(chunk_id)`.
+
 ## 4. 인덱스
 
 | 인덱스 | 대상 | 쓰는 곳 |
@@ -336,6 +361,7 @@ erDiagram
 | `sasu questions` · 웹 "새로 만들기" | — | — | 갱신·추가·stale 표시, 답 없는 stale 삭제 | — |
 | `sasu answer` · `answers` · `record_answer` | — | — | `answer`·`status`·`answered_*` 갱신 | — |
 | `sasu embed` | — | 다시 만듦 | — | `embed_model` |
+| `sasu docs add` · `remove` · 웹 올리기·지우기 | — | — | '문서 확인'(`doc_check`) 질문을 맞춤: 새로 추가, 답 없는 사라진 것만 삭제 | — (문서 테이블만 바뀜) |
 
 분석 테이블의 id(`files`·`classes`·`methods`·`statements`)는 다시 분석할 때마다 바뀐다. 다른 데이터가 이 id를 오래 붙잡지 않게 설계했다: 질문은 `key`·`target`, 임베딩 캐시는 글 해시를 쓴다.
 

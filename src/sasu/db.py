@@ -184,10 +184,46 @@ CREATE TABLE IF NOT EXISTS questions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- 인수인계 문서 (sasu docs add). 사람이 넣은 데이터라 다시 분석해도, 스키마가 바뀌어도 지우지 않는다.
+-- 원본 파일은 복사하지 않고 비밀을 가린 조각만 둔다.
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,      -- 파일 이름 (같은 이름을 다시 넣으면 새 판으로 바꾼다)
+    format TEXT NOT NULL,           -- md, txt, docx, xlsx, pptx, pdf, hwpx, hwp
+    sha1 TEXT NOT NULL,             -- 원본 파일 해시 (같은 파일이면 다시 넣지 않는다)
+    doc_date TEXT,                  -- 문서 날짜 YYYY-MM-DD 또는 YYYY-MM
+    date_source TEXT,               -- 본문, 파일 속성, 올린 날
+    chunks INTEGER NOT NULL DEFAULT 0,
+    redactions TEXT NOT NULL DEFAULT '{}',  -- JSON {종류: 가린 개수}
+    added_at TEXT NOT NULL,
+    added_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS doc_chunks (
+    id INTEGER PRIMARY KEY,
+    doc_id INTEGER NOT NULL REFERENCES documents(id),
+    seq INTEGER NOT NULL,           -- 문서 안 순서
+    section TEXT,                   -- 절 번호 (3.2)
+    heading TEXT,                   -- 제목 경로 "3 운영 > 3.2 배치 운영"
+    page TEXT,                      -- 쪽 번호·시트 이름·슬라이드 번호
+    text TEXT NOT NULL              -- 비밀을 가린 글
+);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_doc ON doc_chunks(doc_id, seq);
+
+-- 조각 → 코드. 코드 id는 다시 분석하면 바뀌어 이름으로 둔다 (url·table·class·method(Class.method)·label(업무명))
+CREATE TABLE IF NOT EXISTS doc_links (
+    chunk_id INTEGER NOT NULL REFERENCES doc_chunks(id),
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    found INTEGER NOT NULL          -- 1 코드에 있음, 0 코드에 없음 (문서–코드 불일치 후보)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_links ON doc_links(kind, value);
+CREATE INDEX IF NOT EXISTS idx_doc_links_chunk ON doc_links(chunk_id);
 """
 
 # 사람이 입력한 데이터. 색인 초기화·스키마 변경 때도 남긴다.
-PRESERVED_TABLES = {"questions"}
+PRESERVED_TABLES = {"questions", "documents", "doc_chunks", "doc_links"}
 
 
 # 스키마를 바꾸면 올린다. 버전이 다른 분석 파일은 지우고 새로 만든다 (다시 index 하면 됨).

@@ -1,7 +1,8 @@
 """일상어 검색 평가: 페르소나가 실제로 친 한국어 질문으로 묻기 대상 후보(상위 6)를 잰다.
 
 - 평가 세트: everyday.json (질문, 코드를 읽어 정한 정답 메서드 집합). gold가 빈 질문은 일반 개념 질문.
-  질문마다 split: dev(가중치·문턱을 정할 때 쓴 질문, 없으면 dev) | test(새 결정에 쓰지 않고 채점만).
+  질문마다 split: dev(가중치·문턱을 정할 때 쓴 질문, 없으면 dev) | test(새 결정에 쓰지 않고 채점만)
+  | holdout(설정을 다 고른 뒤 마지막 측정에만. 저장소 밖 세트 파일에 두고 --set·--split holdout으로 잰다).
 - 지표: 상위 6 후보에 정답이 하나라도 있는 비율, 일반 질문을 low_confidence로 표시한 비율,
   (참고) 정답 있는 질문을 잘못 low_confidence로 표시한 비율, 질문당 지연.
 - 넓히기 LLM 출력은 실행마다 달라서 같은 설정을 N번 재고 실행별 값·평균·최소~최대,
@@ -18,7 +19,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_SET = Path(__file__).with_name("everyday.json")
-SPLITS = ("dev", "test")
+SPLITS = ("dev", "test", "holdout")
 
 
 def load_set(path: Path | None = None) -> dict:
@@ -30,14 +31,14 @@ def split_of(question: dict) -> str:
 
 
 def select(questions: list[dict], split: str = "all") -> list[dict]:
-    """split: dev | test | all. 알 수 없는 split이 적힌 질문이 있으면 ValueError."""
+    """split: dev | test | holdout | all. 알 수 없는 split이 적힌 질문이 있으면 ValueError."""
     unknown = sorted({split_of(q) for q in questions} - set(SPLITS))
     if unknown:
         raise ValueError(f"split은 {', '.join(SPLITS)} 중 하나여야 해요: {', '.join(unknown)}")
     if split == "all":
         return list(questions)
     if split not in SPLITS:
-        raise ValueError(f"--split은 dev, test, all 중 하나: {split}")
+        raise ValueError(f"--split은 {', '.join(SPLITS)}, all 중 하나: {split}")
     return [q for q in questions if split_of(q) == split]
 
 
@@ -56,6 +57,10 @@ class CaseResult:
     why: list[str] = field(default_factory=list)
     split: str = "dev"
     expand_error: str | None = None  # 넓히기 LLM이 실패했으면 그 이유 (그 질문은 넓히기 없이 검색)
+    kind: str | None = None  # 넓히기 LLM이 본 질문 종류 code | general (없으면 None)
+    best_score: float = 0.0  # 질문 낱말만으로 가장 잘 맞는 코드의 BM25 점수 (low_confidence 규칙 비교용)
+    rerank_seconds: float = 0.0  # LLM 재순위만 (안 했으면 0)
+    rerank_error: str | None = None  # 재순위 LLM이 실패했으면 그 이유 (그 질문은 검색 순서 그대로)
 
 
 @dataclass
@@ -102,19 +107,27 @@ class VariantResult:
     def avg_expand_seconds(self) -> float:
         return sum(c.expand_seconds for c in self.cases) / len(self.cases) if self.cases else 0.0
 
+    @property
+    def avg_rerank_seconds(self) -> float:
+        return sum(c.rerank_seconds for c in self.cases) / len(self.cases) if self.cases else 0.0
+
 
 def short(label: str) -> str:
     parts = label.split(".")
     return ".".join(parts[-2:])
 
 
-def run_variant(conn, name: str, questions: list[dict], index, expander, top: int = 6) -> VariantResult:
+def run_variant(conn, name: str, questions: list[dict], index, expander, top: int = 6,
+                reranker=None) -> VariantResult:
+    """reranker: LLM 재순위 (rerank.LLMReranker). None이면 재순위 없이 (설정의 SASU_RERANK를 따르지 않는다)."""
     from sasu.rag.pipeline import search_question
 
     cases = []
     for q in questions:
+        if reranker is not None:  # 일반 질문은 재순위를 건너뛰어 지난 질문 값이 남지 않게
+            reranker.last_seconds, reranker.last_error = 0.0, None
         started = time.perf_counter()
-        r = search_question(conn, q["question"], top=top, expander=expander, index=index)
+        r = search_question(conn, q["question"], top=top, expander=expander, index=index, reranker=reranker)
         seconds = time.perf_counter() - started
         labels = [short(c.label) for c in r.candidates]
         gold = set(q.get("gold") or [])
@@ -122,7 +135,8 @@ def run_variant(conn, name: str, questions: list[dict], index, expander, top: in
         cases.append(CaseResult(
             q["id"], q["question"], sorted(gold), labels, rank, r.low_confidence, r.coverage, r.expanded_terms,
             seconds, expander.last_seconds if expander is not None else 0.0, [c.why for c in r.candidates],
-            split_of(q), expander.last_error if expander is not None else None,
+            split_of(q), expander.last_error if expander is not None else None, r.question_kind, r.best_score,
+            reranker.last_seconds if reranker is not None else 0.0, reranker.last_error if reranker is not None else None,
         ))
     return VariantResult(name, cases)
 
@@ -198,6 +212,8 @@ def summarize(runs: list[VariantResult], base: list[VariantResult] | None = None
         "low_conf_specific": {"per_run": false_low, "mean": sum(false_low) / len(false_low) if false_low else 0.0},
         "avg_seconds": sum(r.avg_seconds for r in runs) / len(runs) if runs else 0.0,
         "avg_expand_seconds": sum(r.avg_expand_seconds for r in runs) / len(runs) if runs else 0.0,
+        "avg_rerank_seconds": sum(r.avg_rerank_seconds for r in runs) / len(runs) if runs else 0.0,
+        "rerank_errors": sum(c.rerank_error is not None for r in runs for c in r.cases),
         "expand_errors": sum(c.expand_error is not None for r in runs for c in r.cases),
     }
 

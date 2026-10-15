@@ -14,7 +14,7 @@ from sasu.parsers.build_info import read_build_info
 from sasu.parsers.java_parser import JavaFile, parse_java
 from sasu.parsers.mybatis_parser import extract_tables, parse_mapper
 from sasu.parsers.python_parser import parse_python, route_paths
-from sasu.parsers.web_refs import extract_refs
+from sasu.parsers.web_refs import extract_refs, extract_template_refs
 
 _DIALECT_SUFFIX = re.compile(r"_SQL_([A-Za-z]+)\.xml$", re.IGNORECASE)
 _SKIP_DIRS = {
@@ -165,6 +165,10 @@ def _store_code(conn: sqlite3.Connection, parsed: JavaFile, rel: str, kind: str,
             conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", (f"jparepo:{class_id}", cls.repository_entity))
         if kind == "java":
             stats.annotated_sql.extend(_annotated_sql(cls, file_id))
+        if cls.py_info:
+            # Django 모델 Meta·앱 설정 label·get_class로 불러 둔 뷰 (linker_python이 모델 상속·URL include에 쓴다)
+            conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
+                         (f"pyclass:{class_id}", json.dumps(cls.py_info, ensure_ascii=False)))
         if kind == "python" and cls.kind == "module":
             # 모듈 수준 router = APIRouter(prefix=...)는 URL 접두어 계산에 쓴다 (인자가 없어도 저장)
             for f in cls.fields:
@@ -290,6 +294,8 @@ def _index_refs(conn: sqlite3.Connection, path: Path, rel: str, kind: str, metho
     if path.stat().st_size <= _MAX_REF_FILE_BYTES:
         text = path.read_text(encoding="utf-8", errors="replace")
     refs = extract_refs(text, methods=methods) if text else []
+    if kind == "template" and text:
+        refs += extract_template_refs(text)  # Django·Jinja {% url %}·{% include %}·{{ obj.attr }}
     if not refs and kind not in ("jsp", "template"):
         return
     file_id = conn.execute("INSERT INTO files (path, kind) VALUES (?, ?)", (rel, kind)).lastrowid

@@ -234,6 +234,8 @@ const GRADE = {
   사실: { cls: "fact", icon: "circle-check", name: "사실", desc: "코드·SQL에서 직접 확인한 내용이에요." },
   답변: { cls: "answer", icon: "user-round-check", name: "답변", desc: "전임자가 준 답변에 있는 내용이에요. 기억에 기댄 것이라 코드와 다를 수 있어요." },
   추정: { cls: "guess", icon: "circle-dashed", name: "추정", desc: "사수가 근거를 보고 짐작한 내용이에요. 고치기 전에 확인하세요." },
+  // 인수인계 문서: 오래됐을 수 있어 사실보다 낮게 믿는다 (세피아 색 + 겹줄 띠 + 문서 아이콘)
+  문서: { cls: "doc", icon: "file-text", name: "문서", desc: "전임자가 남긴 인수인계 문서에 적힌 내용이에요. 오래됐을 수 있어 코드로 확인되기 전까지는 사실로 보지 않아요." },
   모름: { cls: "unknown", icon: "circle-question-mark", name: "모름", desc: "근거가 없어 답하지 않았어요. 아래 질문을 전임자에게 물어보세요." },
   질문: { cls: "question", icon: "message-circle-question-mark", name: "물어볼 질문", desc: "전임자에게 그대로 보낼 수 있는 질문이에요." },
 };
@@ -241,7 +243,10 @@ const LEVEL = {
   "확인된 사실": { name: "코드·SQL", cls: "fact", icon: "code-xml" },
   "인수인계 답변": { name: "받은 답변", cls: "answer", icon: "user-round-check" },
   기록: { name: "주석·커밋", cls: "record", icon: "git-commit-horizontal" },
+  문서: { name: "문서", cls: "doc", icon: "file-text" },
 };
+// 답 머리의 등급별 개수·범례에 쓰는 순서 (문서는 사실·답변 다음, 추정 앞)
+const GRADE_ORDER = ["사실", "답변", "문서", "추정", "모름"];
 
 function gradeChip(label, extra) {
   const g = GRADE[label] || GRADE.추정;
@@ -454,7 +459,7 @@ function show(view, params) {
 }
 
 const paramHandlers = {
-  questions: (p) => { if (p.q) openQuestionById(Number(p.q)); },
+  questions: (p) => { if (p.q) openQuestionById(Number(p.q)); if (p.docs) openDocsFold(); },
   trace: (p) => { if (p.url && p.url !== traceState.last) traceUrl(p.url, { fromHash: true }); },
   ask: (p) => {
     if (!p.q) return;
@@ -498,6 +503,8 @@ $("#project").addEventListener("change", async (e) => {
     Q.selecting = false;
     Q.open = null;
     traceState.last = null;
+    DOCS.list = null;
+    setKids($("#docs-result"), );
     setKids($("#ask-result"), );
     setKids($("#trace-result"), );
     await loadProjects();
@@ -599,12 +606,14 @@ views.home = async function () {
       h("i", { style: `width:${p.topPct}%` })) : null,
     h("div", { class: "stage-go" },
       h("a", { class: "btn primary", href: s.go, onclick: pick(s.key) }, s.btn, icon("chevron-right", "i14")),
-      s.key === "first" ? h("a", { href: "#overview", onclick: pick(s.key) }, "프로젝트 지도") : null)));
+      s.key === "first" ? h("a", { href: "#overview", onclick: pick(s.key) }, "프로젝트 지도") : null,
+      // 보조 링크: 전임자가 남긴 문서를 올리면 묻기 근거([문서])와 '문서 확인' 질문이 된다
+      s.key === "handover" ? h("a", { href: "#questions?docs=1", onclick: pick(s.key) }, "인수인계 문서 올리기") : null)));
   setKids(root,
     h("h2", { id: "home-title" }, "지금 어느 단계예요?"),
     h("p", { class: "lead" }, "단계를 고르면 그때 할 일만 보여 드려요."),
     h("div", { class: "stages" }, cards),
-    h("p", { class: "legend-line" }, icon("info", "i14"), "사수는 코드·SQL·받은 답변만 근거로 답하고, 근거가 없으면 '모름'이라고 말합니다."));
+    h("p", { class: "legend-line" }, icon("info", "i14"), "사수는 코드·SQL·받은 답변을 근거로 답하고(올린 인수인계 문서는 [문서]로 따로 표시), 근거가 없으면 '모름'이라고 말합니다."));
 };
 
 // ── 프로젝트 지도 (7.1, 탭 밖) ───────────────────────────
@@ -840,7 +849,9 @@ function stackPanel(b) {
 
 const KIND_ICON = {
   broken_sql: "unlink", dynamic_sql: "braces", unused_sql: "database", external_bean: "package", magic_value: "hash",
-  note: "sticky-note", complex: "git-branch", copied_code: "copy", empty_catch: "shield-off",
+  note: "sticky-note", complex: "git-branch", copied_code: "copy", empty_catch: "shield-off", doc_check: "file-text",
+  signal: "network", raw_sql: "database", setting_branch: "corner-down-right", hidden_filter: "list-filter",
+  batch_job: "refresh-cw", transaction: "save", request_hook: "route", swappable_class: "repeat",
 };
 const STATUS_LABEL = { open: "미답변", answered: "답변 완료", skipped: "건너뜀" };
 const TOP = 20;
@@ -965,7 +976,9 @@ views.questions = async function (params) {
     return;
   }
   renderQuestions();
+  loadDocs();
   if (params && params.q) openQuestionById(Number(params.q));
+  if (params && params.docs) openDocsFold();
 };
 
 function inOpenUnit(q) {
@@ -1157,6 +1170,7 @@ function qRow(q, u, sectionTier, open, toggle, inGroup) {
       q.label ? h("span", { class: "qko" }, q.label) : null, h("span", { class: "qcode" }, qLocText(q))),
     h("span", { class: "tags" }, tags),
     h("span", { class: "qans-print" }, q.answer || "")),
+    q.docs ? docChip(q.docs, "method", q.target) : null,
     Q.justSaved.has(q.id) && q.status === "answered"
       ? h("button", { class: "btn sm", type: "button", style: "margin-right:8px", onclick: () => askAbout(q) }, icon("message-square-quote", "i14"), "이 코드로 묻기")
       : null);
@@ -1683,6 +1697,173 @@ window.addEventListener("afterprint", () => {
   renderQuestions();
 });
 
+// ── 인수인계 문서 (질문 화면 진행 줄 아래 접기) ─────────
+// 접힌 머리: "인수인계 문서 · 3개 · 조각 42 · 문서 확인 질문 5". 펼치면 끌어 놓기·파일 고르기, 올린 결과, 문서 목록
+
+const DOCS = { list: null };
+const REDACT_ORDER = ["비밀번호", "계정/암호", "API 키", "토큰", "주민번호", "카드번호", "IP", "접속 문자열"];
+const DOC_STATUS = { added: "넣었어요", replaced: "새 판으로 바꿨어요", unchanged: "같은 내용이라 건너뛰었어요", failed: "읽지 못했어요" };
+
+// {비밀번호: 2, IP: 3} → "비밀번호 2·IP 3 가림"
+function redactText(r) {
+  const rank = (k) => (REDACT_ORDER.indexOf(k) < 0 ? 99 : REDACT_ORDER.indexOf(k));
+  const parts = Object.entries(r || {}).filter(([, n]) => n).sort((a, b) => rank(a[0]) - rank(b[0]));
+  return parts.length ? `${parts.map(([k, n]) => `${k} ${n}`).join("·")} 가림` : "가린 비밀 없음";
+}
+
+async function loadDocs() {
+  try {
+    DOCS.list = (await api("/api/docs/list")).documents || [];
+  } catch {
+    DOCS.list = null;  // 문서 API가 없는 예전 서버거나 프로젝트 없음: 접기 머리만 비운다
+  }
+  paintDocs();
+}
+
+function openDocsFold() {
+  const d = $("#docs-fold");
+  d.open = true;
+  if (DOCS.list === null) loadDocs();
+  setTimeout(() => focusResultHead($("#docs-pick")), 0);
+}
+
+function paintDocs() {
+  const list = DOCS.list;
+  const nCheck = Q.data ? Q.data.items.filter((q) => q.kind === "doc_check").length : 0;
+  const chunks = (list || []).reduce((n, d) => n + (d.chunks || 0), 0);
+  $("#docs-sum").textContent = list === null ? ""
+    : list.length ? ` · ${fmt(list.length)}개 · 조각 ${fmt(chunks)}${nCheck ? ` · 문서 확인 질문 ${fmt(nCheck)}` : ""}`
+      : " · 아직 없음 (올리면 묻기 근거가 돼요)";
+  const box = $("#docs-list");
+  if (!list || !list.length) { setKids(box, ); return; }
+  setKids(box, h("div", { class: "table-wrap" }, h("table", { class: "grid docs-table" },
+    h("caption", {}, `문서 ${fmt(list.length)}개 · 이름을 누르면 조각을 봐요`),
+    h("thead", {}, h("tr", {}, h("th", {}, "문서"), h("th", {}, "문서 날짜"), h("th", { class: "num" }, "조각"),
+      h("th", { class: "num" }, "코드 연결"), h("th", {}, "가린 비밀"), h("th", {}, h("span", { class: "visually-hidden" }, "지우기")))),
+    h("tbody", {}, list.map((d) => h("tr", {},
+      h("td", {}, h("button", { class: "namebtn", type: "button", onclick: () => showDocument(d) }, d.name)),
+      h("td", { class: "xs" }, d.doc_date || "–", d.date_source ? h("span", { class: "muted" }, ` (${d.date_source})`) : null),
+      h("td", { class: "num" }, fmt(d.chunks)),
+      h("td", { class: "num" }, d.links ? fmt(d.links) : h("span", { class: "zero" }, "–")),
+      h("td", { class: "xs" }, redactText(d.redactions)),
+      h("td", {}, h("button", { class: "btn sm", type: "button", "aria-label": `${d.name} 지우기`, onclick: () => confirmDeleteDoc(d) },
+        icon("trash-2", "i14"), "지우기"))))))));
+}
+
+async function showDocument(d) {
+  try {
+    const r = await api(`/api/docs/${d.id}`);
+    chunksModal(`${d.name} · 조각 ${r.chunks.length}개`, r.chunks,
+      `비밀을 가린 뒤 저장한 조각이에요 (${redactText(d.redactions)}). 원본 파일은 사수에 없어요.`);
+  } catch (err) { toast(err.message); }
+}
+
+function confirmDeleteDoc(d) {
+  modal(`‘${d.name}’ 지우기`, [
+    h("p", { style: "margin:0" }, `이 문서의 조각 ${fmt(d.chunks)}개를 지워요. 사수에게 물을 때 근거에서 빠지고, 이 문서로 만든 '문서 확인' 질문 중 답이 없는 것도 사라져요. 받은 답은 남아요.`),
+    h("p", { class: "muted small", style: "margin:0" }, "원본 파일은 사수에 없으니, 필요하면 다시 올리면 돼요."),
+  ], (close) => [
+    h("button", { class: "btn", type: "button", onclick: close }, "닫기"),
+    h("button", { class: "btn primary", type: "button", onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        await api(`/api/docs/${d.id}`, { method: "DELETE" });
+        close();
+        toast(`${d.name}을 지웠어요`);
+        setKids($("#docs-result"), );
+        await Promise.all([loadDocs(), refreshAfterDocs()]);
+        $("#docs-pick").focus();
+      } catch (err) { close(); toast(err.message); }
+    } }, icon("trash-2"), "지우기"),
+  ]);
+}
+
+// 문서를 넣거나 지우면 '문서 확인' 질문이 바뀐다
+async function refreshAfterDocs() {
+  try {
+    await getQuestions(true);
+    if (loaded.has("questions")) renderQuestions();
+    paintDocs();
+  } catch { /* 다음에 다시 */ }
+}
+
+async function uploadDocs(fileList) {
+  const files = [...fileList].filter((f) => f && f.name);
+  if (!files.length) return;
+  const out = $("#docs-result");
+  const pickBtn = $("#docs-pick");
+  out.setAttribute("aria-busy", "true");
+  setKids(out, loading(`문서 ${files.length}개를 읽는 중… (조각 나누기 · 비밀 가리기 · 코드와 잇기)`));
+  pickBtn.disabled = true;
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f, f.name));
+  const by = store("sasu-answered-by");
+  if (by) form.append("by", by);
+  try {
+    const r = await api("/api/docs", { method: "POST", body: form });
+    await Promise.all([loadDocs(), refreshAfterDocs()]);
+    setKids(out, uploadResult(r));
+    const ok = r.results.filter((x) => x.status !== "failed").length;
+    announce(`문서 ${ok}개를 넣었어요${ok < r.results.length ? `, ${r.results.length - ok}개는 읽지 못했어요` : ""}`);
+    focusResultHead(out.querySelector(".docs-sumline"));
+  } catch (err) {
+    setKids(out, errorBox(err));
+  } finally {
+    out.removeAttribute("aria-busy");
+    pickBtn.disabled = false;
+    $("#docs-file").value = "";
+  }
+}
+
+// 올린 결과: 파일마다 조각 수 · "비밀번호 2·IP 3 가림" · 코드와 연결 수 · 못 읽은 이유
+function uploadResult(r) {
+  const nCheck = r.doc_conflicts || 0;
+  const head = h("div", { class: "docs-sumline", tabindex: "-1" },
+    h("b", {}, `올린 결과 ${r.results.length}개`),
+    nCheck ? [h("span", { class: "muted" }, `· 문서와 코드가 다른 곳은 '문서 확인' 질문 ${fmt(nCheck)}개가 됐어요`),
+      h("button", { class: "btn sm", type: "button", onclick: () => {
+        Object.assign(Q, { kind: "doc_check", status: "all", open: null });
+        renderQuestions({ focus: "#q-result-head" });
+      } }, icon("list-filter", "i14"), "문서 확인 질문 보기")] : h("span", { class: "muted" }, "· 코드와 다른 곳은 찾지 못했어요"));
+  return h("div", { class: "docs-results" }, head, r.results.map((x) => {
+    const failed = x.status === "failed";
+    const facts = failed ? null : h("div", { class: "facts" },
+      h("span", {}, "조각 ", h("b", {}, fmt(x.chunks))),
+      h("span", {}, redactText(x.redactions)),
+      h("span", {}, "코드와 연결 ", h("b", {}, fmt(x.links))),
+      x.missing && x.missing.length ? h("span", { title: x.missing.join("\n") }, `코드에 없는 이름 ${fmt(x.missing.length)}`) : null,
+      x.doc_date ? h("span", {}, `문서 날짜 ${x.doc_date}${x.date_source ? ` (${x.date_source})` : ""}`) : null);
+    return h("div", { class: `res${failed ? " failed" : ""}` }, icon(failed ? "circle-alert" : "file-text"),
+      h("div", {}, h("b", {}, x.name), h("span", { class: "muted" }, ` · ${DOC_STATUS[x.status] || x.status}`),
+        failed ? h("div", { class: "small" }, x.reason || "이유를 알 수 없어요") : facts));
+  }));
+}
+
+$("#docs-pick").addEventListener("click", () => $("#docs-file").click());
+$("#docs-file").addEventListener("change", (e) => uploadDocs(e.target.files));
+$("#docs-fold").addEventListener("toggle", () => { if ($("#docs-fold").open && DOCS.list === null) loadDocs(); });
+(function dropzone() {
+  const zone = $("#docs-drop");
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  let depth = 0;
+  zone.addEventListener("dragenter", (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; zone.classList.add("over"); });
+  zone.addEventListener("dragover", (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
+  zone.addEventListener("dragleave", () => { depth = Math.max(0, depth - 1); if (!depth) zone.classList.remove("over"); });
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    depth = 0;
+    zone.classList.remove("over");
+    uploadDocs(e.dataTransfer.files);
+  });
+  // 칸 밖에 놓으면 브라우저가 파일을 열어 화면을 떠나므로 막고 알려 준다
+  document.addEventListener("dragover", (e) => { if (hasFiles(e) && !zone.contains(e.target)) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; } });
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e) || zone.contains(e.target)) return;
+    e.preventDefault();
+    if (currentView === "questions") { openDocsFold(); toast("문서는 '인수인계 문서'의 점선 칸에 끌어 놓아 주세요"); }
+  });
+})();
+
 // ── 경로 추적 (7.3) ──────────────────────────────────────
 
 const traceState = { last: null };
@@ -2041,6 +2222,10 @@ function traceNode(n, depth, ctx) {
     body.push(h("span", { class: "dashed-tag", title: TERM.external }, `저장소 밖${bean ? ` · ${bean}` : ""}`));
   }
   if (n.count > 1) body.push(h("span", { class: "muted xs" }, `×${n.count}`));
+  if (n.docs) {
+    const dk = n.kind === "url" ? ["url", n.label] : n.kind === "method" ? ["method", n.label] : n.kind === "statement" ? ["table", n.detail] : null;
+    if (dk) body.push(docChip(n.docs, dk[0], dk[1]));
+  }
   if (koEl) body.push(koEl);  // 한글 설명은 맨 끝 한 줄 (×n이 그 아래로 밀리지 않게)
 
   const li = h("li", { class: n.kind === "statement" && isEstimated(n) ? "dyn" : null });
@@ -2338,7 +2523,9 @@ async function answerPhase(run, req, body, ev, cands) {
   const answerBox = h("div", { class: "card answer-card" }, progress);
   const evidenceCol = h("div", { class: "evidence-col" },
     h("h3", { style: "margin-top:0" }, `근거 ${ev.evidence.length}개`),
-    h("div", { class: "evidence" }, ev.evidence.map(evidenceCard)));
+    h("div", { class: "evidence" }, ev.evidence.map(evidenceCard)),
+    docHits(ev));
+  const ruleConflicts = Array.isArray(ev.doc_conflicts) ? ev.doc_conflicts : [];
   // 답 위는 한 줄: "이 답은 코드 한 곳(…)만 보고 만들었어요" + [다른 코드로 다시 묻기] (후보 칩 줄·대상 띠를 접었다)
   const again = () => {
     if (cands && cands.length) {
@@ -2356,6 +2543,7 @@ async function answerPhase(run, req, body, ev, cands) {
       h("b", { class: "grow" }, `이 답은 코드 한 곳(${ko ? `${ko} · ` : ""}${t.label})만 보고 만들었어요`),
       locLink(`${t.path}:${t.line_start}-${t.line_end}`, `${fileName(t.path)}:${t.line_start}`),
       h("button", { class: "btn sm", type: "button", onclick: again }, icon("refresh-cw", "i14"), "다른 코드로 다시 묻기")),
+    ruleConflicts.length ? conflictBox(ruleConflicts, [], t) : null,
     h("div", { class: "ask-grid" }, answerBox, evidenceCol),
   );
   try {
@@ -2373,6 +2561,7 @@ async function answerPhase(run, req, body, ev, cands) {
 function evidenceCard(e) {
   const isCode = e.title.endsWith(" 코드");
   const lv = LEVEL[e.level] || { name: e.level, cls: "record", icon: "info" };
+  if (e.level === "문서") return docEvidenceCard(e, lv);
   return h("details", { class: "card ev", id: `ev-${e.id}`, open: !isCode },
     h("summary", {}, h("span", { class: "eid" }, e.id), h("span", { class: "muted" }, "·"),
       h("span", {}, icon(lv.icon, `i14 ${lv.cls}`), ` ${lv.name}`), h("span", { class: "muted" }, "·"),
@@ -2382,8 +2571,109 @@ function evidenceCard(e) {
     h("pre", {}, e.text));
 }
 
+// [문서] 근거: 머리 "E3 · 문서 · 인수인계서.docx 3.2 배치 운영 (2025-03)". 접혀 있다가 펼치면 조각 글,
+// 길어서 잘린 조각은 [조각 전체 보기]로 /api/docs/chunks/{id}를 읽어 바꿔 넣는다
+function docEvidenceCard(e, lv) {
+  const pre = h("pre", {}, e.text);
+  const cut = e.chunk_id && /\s…$/.test(e.text);
+  const more = cut ? h("button", { class: "btn sm more-chunk", type: "button", onclick: async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      const c = await api(`/api/docs/chunks/${e.chunk_id}`);
+      pre.textContent = c.heading ? `(${c.heading})\n${c.text}` : c.text;
+      btn.remove();
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  } }, icon("file-text", "i14"), "조각 전체 보기") : null;
+  return h("details", { class: "card ev doc", id: `ev-${e.id}` },
+    h("summary", {}, h("span", { class: "eid" }, e.id), h("span", { class: "muted" }, "·"),
+      h("span", {}, icon(lv.icon, `i14 ${lv.cls}`), ` ${lv.name}`), h("span", { class: "muted" }, "·"),
+      h("span", { class: "grow" }, e.title),
+      h("span", { class: "muted xs hint" }, "펼쳐서 조각 보기")),
+    h("div", { class: "back hidden" }),
+    h("div", { class: "muted xs", style: "margin-top:4px" }, "문서는 오래됐을 수 있어요. 코드·SQL 근거와 다르면 코드가 지금 동작이에요."),
+    pre, more);
+}
+
+// 문서 조각 카드 (모달·문서 검색 결과): 제목(이름 절 제목 (날짜)) · 제목 경로 · 글 · 이어진 코드 이름
+function chunkCard(c) {
+  const found = (c.links || []).filter((l) => l.found);
+  return h("div", { class: "chunk" },
+    h("div", { class: "ctitle" }, icon("file-text", "i14 doc"), " ", c.title || c.doc),
+    c.heading ? h("div", { class: "cpath" }, c.heading) : null,
+    h("pre", {}, c.text),
+    found.length ? h("div", { class: "clinks" }, h("span", { class: "muted xs" }, "이어진 코드:"),
+      found.slice(0, 12).map((l) => h("span", { class: "chip mono", title: l.kind }, l.value)),
+      found.length > 12 ? h("span", { class: "muted xs" }, `외 ${found.length - 12}`) : null) : null);
+}
+
+function chunksModal(title, chunks, note) {
+  modal(title, [
+    note ? h("p", { class: "muted small", style: "margin:0" }, note) : null,
+    chunks.length ? h("div", { class: "chunks" }, chunks.map(chunkCard)) : h("p", { class: "muted" }, "이어진 문서 조각이 없어요."),
+  ].filter(Boolean), (close) => [h("button", { class: "btn primary", type: "button", onclick: close }, "닫기")]);
+}
+
+// 경로 추적 노드·질문 행의 "문서 n" 칩: 누르면 그 코드와 이어진 문서 조각
+const DOC_KIND_NAME = { url: "URL", method: "코드", table: "테이블" };
+function docChip(n, kind, value) {
+  if (!n || !value) return null;
+  return h("button", { class: "docchip", type: "button", title: `이 ${DOC_KIND_NAME[kind] || "코드"}와 이어진 인수인계 문서 조각 ${n}개 보기`,
+    "aria-label": `${value}와 이어진 문서 조각 ${n}개 보기`,
+    onclick: async (e) => {
+      e.stopPropagation();
+      try {
+        const d = await api(`/api/docs/linked?${new URLSearchParams({ kind, value })}`);
+        chunksModal(`문서 조각 ${d.chunks.length}개 · ${value}`, d.chunks, "인수인계 문서에서 이 코드 이름이 나온 조각이에요. 문서는 오래됐을 수 있어요.");
+      } catch (err) { toast(err.message); }
+    } }, icon("file-text", "i12"), `문서 ${n}`);
+}
+
+// "문서와 코드가 달라요": 규칙으로 찾은 것(문서 쪽·코드 쪽을 둘 다)과 LLM이 답에서 짚은 문장
+function conflictBox(rules, llm, target) {
+  const items = [];
+  rules.forEach((c, i) => items.push(h("div", { class: `conflict${i ? "" : " first"}` },
+    h("div", { class: "side" }, h("span", {}, "문서"), h("div", {}, h("b", {}, c.doc_says), " — ", c.doc_title,
+      c.sentence ? h("span", { class: "sent" }, `“${c.sentence}”`) : null)),
+    h("div", { class: "side" }, h("span", {}, "코드"), h("div", {}, c.code_says)),
+    h("div", { class: "row" }, h("button", { class: "btn sm", type: "button", onclick: () => conflictToQuestion(c.question, target) },
+      icon("message-circle-question-mark", "i14"), "전임자에게 물을 질문으로")))));
+  llm.forEach((text, i) => items.push(h("div", { class: `conflict${items.length || i ? "" : " first"}` },
+    h("div", { class: "side" }, h("span", {}, "답"), h("div", {}, text)),
+    h("div", { class: "row" }, h("button", { class: "btn sm", type: "button", onclick: () => conflictToQuestion(text.replace(/^문서와 코드가 달라요:\s*/, "") + " 어느 쪽이 지금 맞나요?", target) },
+      icon("message-circle-question-mark", "i14"), "전임자에게 물을 질문으로")))));
+  return h("div", { class: "notice warn conflict-box", role: "note" }, icon("triangle-alert"),
+    h("div", {}, h("b", {}, `문서와 코드가 달라요${rules.length + llm.length > 1 ? ` (${rules.length + llm.length}곳)` : ""}`),
+      h("div", { class: "muted xs" }, rules.length ? "같은 코드에 대해 인수인계 문서와 코드가 다른 값을 말해요. 코드가 지금 동작이고, 문서가 맞는지는 전임자에게 확인하세요."
+        : "사수의 답이 문서와 코드가 다르다고 짚은 곳이에요."),
+      items));
+}
+
+// 이미 '문서 확인' 질문으로 있으면 그 질문으로, 없으면 전임자에게 보낼 메시지 초안
+async function conflictToQuestion(question, target) {
+  const d = await getQuestions(true).catch(() => Q.data);
+  const q = d && d.items.find((x) => x.kind === "doc_check" && x.question === question);
+  if (q) {
+    navigate("questions", { q: q.id });
+    toast(`Q${q.id} '문서 확인' 질문이에요. 답을 받으면 여기에 적어 주세요.`);
+    return;
+  }
+  if (target) askDraft(question, target);
+  else draftModal("전임자에게 보낼 메시지", `안녕하세요, [이름]입니다.\n\n■ 질문: ${question}\n\n한두 줄로 답해 주셔도 충분합니다. 감사합니다.`);
+}
+
+// 질문과 맞는 문서 조각 (대상 코드와 상관없이 찾은 것). 근거로 이미 쓴 조각은 뺀다
+function docHits(ev) {
+  const used = new Set(ev.evidence.filter((e) => e.chunk_id).map((e) => e.chunk_id));
+  const hits = (ev.docs || []).filter((c) => !used.has(c.id));
+  if (!hits.length) return null;
+  return h("details", { class: "fold-sm doc-hits" },
+    h("summary", {}, icon("chevron-right", "i14 chev"), icon("file-text", "i14 doc"), `질문과 맞는 다른 문서 조각 ${hits.length}개`),
+    h("div", { class: "chunks" }, hits.map(chunkCard)));
+}
+
 function downgradeInfo(text) {
-  const m = /^\[(사실|답변)\]인데 '([^']+)' 근거가 없음$/.exec(text || "");
+  const m = /^\[(사실|답변|문서)\]인데 '([^']+)' 근거가 없음$/.exec(text || "");
   if (m) return { from: m[1], reason: `${(LEVEL[m[2]] || { name: m[2] }).name} 근거 없음` };
   if (/표시가 없어/.test(text)) return { from: null, reason: "등급 표시 없음" };
   if (/근거 번호가 없음/.test(text)) return { from: null, reason: "근거 번호 없음" };
@@ -2405,7 +2695,7 @@ function renderAnswer(ans, ev) {
   }
   const levels = new Map(ev.evidence.map((e) => [e.id, e.level]));
   // 답 머리 바로 아래 등급별 개수 한 줄 ("사실 3 · 추정 1 · 모름 1"). 첫 문장을 요약처럼 키우지 않는다(사실처럼 보일 위험)
-  const tally = ["사실", "답변", "추정", "모름"].map((k) => [k, ans.sentences.filter((s) => s.label === k).length]).filter(([, n]) => n);
+  const tally = GRADE_ORDER.map((k) => [k, ans.sentences.filter((s) => s.label === k).length]).filter(([, n]) => n);
   const nAsk = ans.sentences.filter((s) => s.label === "질문").length;
   const counts = tally.length || nAsk ? h("div", { class: "grade-tally", "aria-label": "문장 등급별 개수" },
     tally.flatMap(([k, n], i) => [i ? h("span", { class: "muted", "aria-hidden": "true" }, "·") : null, gradeChip(k), h("b", {}, String(n))]),
@@ -2416,9 +2706,12 @@ function renderAnswer(ans, ev) {
     h("div", { class: "muted" }, "근거로 만든 답이에요. 추정·모름은 전임자에게 확인하세요."),
     // 등급 범례는 이 화면, 답 위에만: 칩 한 줄, 누르면 뜻
     h("details", { class: "legend-levels" },
-      h("summary", {}, ["사실", "답변", "추정", "모름", "질문"].map((k) => gradeChip(k)), h("span", { class: "muted" }, "등급 뜻")),
-      ["사실", "답변", "추정", "모름", "질문"].map((k) => h("div", {}, gradeChip(k), GRADE[k].desc))),
+      h("summary", {}, [...GRADE_ORDER, "질문"].map((k) => gradeChip(k)), h("span", { class: "muted" }, "등급 뜻")),
+      [...GRADE_ORDER, "질문"].map((k) => h("div", {}, gradeChip(k), GRADE[k].desc))),
   ];
+  // LLM이 답에서 "문서와 코드가 달라요"라고 짚은 문장 (규칙으로 찾은 것은 답 위 경고 상자에 이미 있다)
+  const llmConflicts = (ans.doc_conflicts && Array.isArray(ans.doc_conflicts.llm) ? ans.doc_conflicts.llm : []);
+  if (llmConflicts.length) parts.push(conflictBox([], llmConflicts, ev.target));
   const asks = ans.sentences.filter((s) => s.label === "질문");
   const used = new Map();
   let num = 0;
@@ -2600,6 +2893,9 @@ function paintAsis() {
     ? `${c.kind === "business" ? "이 기능" : "이 모듈"} 기존 동작 목록 받기${rows}`
     : `기존 동작 목록 받기 · 전체${rows}`;
   go.title = c ? `${c.kind === "business" ? `${c.label} (${c.module})` : `${c.module} 모듈`}의 기존 동작 목록(AS-IS) 엑셀` : "모든 기능의 기존 동작 목록(AS-IS) 엑셀";
+  $("#hd-scope").textContent = c
+    ? `범위: ${c.kind === "business" ? `${c.label} · ${c.module}` : `${c.module} 모듈`} (기능 찾기에서 고른 것과 같아요)`
+    : "범위: 전체 (기능 찾기에서 고르면 그 기능만). 전체는 만드는 데 시간이 걸려요.";
   setKids($("#asis-pick"), c
     ? [`고른 것: ${c.kind === "business" ? `${c.label} · ${c.module}` : `${c.module} 모듈 전체${c.label ? ` (${c.label})` : ""}`} · `,
       h("button", { class: "btn-reset linkish", type: "button", onclick: () => { pickAsis(null); $("#asis-q").focus(); } }, "전체로 되돌리기")]
@@ -2648,6 +2944,45 @@ $("#asis-go").addEventListener("click", (e) => {
   showAsisSuggest();
   toast(list.length ? "목록에서 기능을 하나 고르세요" : noMatch(q, "기능이"));
 });
+
+// 보조 [인수인계서 만들기 ▾]: 기능 찾기와 같은 범위로 docx/md. 만드는 데 걸리는 동안 알리고, 오류(범위에 URL 없음,
+// python-docx 없음)는 파일로 내려받지 않고 문구로 보여 준다
+wireMenu($("#hd-menu-btn").closest(".menu-wrap"));
+document.querySelectorAll("#hd-menu button[data-format]").forEach((b) => b.addEventListener("click", () => downloadHandover(b.dataset.format)));
+async function downloadHandover(format) {
+  const c = asis.pick;
+  const params = { format, ...(c ? (c.kind === "business" ? { business: c.label, module: c.module } : { module: c.module }) : {}) };
+  const btn = $("#hd-menu-btn");
+  btn.disabled = true;
+  toast(`인수인계서를 만드는 중이에요${c ? "" : ". 전체라 조금 걸려요"}`);
+  try {
+    let res;
+    try { res = await fetch(`/api/handover-doc?${new URLSearchParams(params)}`); } catch {
+      toast("사수 서버에 연결할 수 없어요. sasu serve를 실행한 터미널 창이 열려 있는지 확인하세요.");
+      return;
+    }
+    if (!res.ok) {
+      let msg = null;
+      try { msg = (await res.json()).detail; } catch { /* 본문 없음 */ }
+      toast(msg || `인수인계서를 만들지 못했어요 (${res.status})`);
+      return;
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = /filename\*=utf-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
+    let name = `인수인계서.${format}`;
+    if (m) { try { name = decodeURIComponent(m[1]); } catch { name = m[1]; } }
+    const url = URL.createObjectURL(blob);
+    const a = h("a", { href: url, download: name, style: "display:none" });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast(`${name}을 내려받았어요. 전임자는 '확인 필요'의 답 칸만 채우면 돼요.`);
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 views.cleanup = async function () {
   fillAsisModules();

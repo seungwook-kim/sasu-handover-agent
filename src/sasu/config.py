@@ -2,7 +2,7 @@
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -49,7 +49,9 @@ class Settings:
     llm_base_url: str
     llm_api_key: str
     llm_model: str
-    llm_provider: str = "openai"  # openai(OpenAI 호환 주소) | claude-code(claude CLI)
+    llm_provider: str = "openai"  # openai(OpenAI 호환 주소) | claude-code(claude CLI) | anthropic(Claude API)
+    # Claude API 키 (SASU_ANTHROPIC_API_KEY). 화면·로그에 찍히지 않게 repr에서 뺀다
+    anthropic_api_key: str = field(default="", repr=False)
 
 
 def load_settings(env_file: Path = Path(".env")) -> Settings:
@@ -63,6 +65,7 @@ def load_settings(env_file: Path = Path(".env")) -> Settings:
         llm_api_key=os.environ.get("SASU_LLM_API_KEY", ""),
         llm_model=os.environ.get("SASU_LLM_MODEL", ""),
         llm_provider=os.environ.get("SASU_LLM_PROVIDER", "openai").lower(),
+        anthropic_api_key=os.environ.get("SASU_ANTHROPIC_API_KEY", "").strip(),
     )
 
 

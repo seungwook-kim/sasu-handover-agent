@@ -180,7 +180,10 @@ def gather_evidence(question: str, target: str | None = None, project: str | Non
     if sel.target is None:
         conn.close()
         return "관련 코드를 찾지 못했습니다. target에 Class.method나 URL을 넣어 보세요."
-    evidence = evidence_for(conn, sel.target, use_git=use_git)
+    evidence = evidence_for(conn, sel.target, use_git=use_git, question=question)
+    from sasu.rag.pipeline import doc_conflicts_for
+
+    conflicts = doc_conflicts_for(conn, evidence)
     conn.close()
     t = sel.target
     lines = [f"대상: {t.label}  {t.path}:{t.line_start}-{t.line_end}"]
@@ -188,7 +191,9 @@ def gather_evidence(question: str, target: str | None = None, project: str | Non
         others = ", ".join(c.label for c in sel.candidates[1:])
         found_by = "같은 이름의 메서드 중 첫째(Service 우선)" if sel.how == "같은 이름" else "질문으로 찾은 1위"
         lines.append(f"({found_by}. 다른 후보: {others or '없음'} — 맞지 않으면 target에 Class.method를 넣어 다시 부르세요)")
-    lines.append("\n근거 등급: 확인된 사실 → [사실], 인수인계 답변 → [답변], 기록(주석·커밋) → [추정]")
+    lines.append("\n근거 등급: 확인된 사실 → [사실], 인수인계 답변 → [답변], 기록(주석·커밋) → [추정]"
+                 + (", 문서(인수인계 문서) → [문서] \"문서에 따르면 …\" (코드로 확인되지 않으면 사실로 쓰지 않는다)"
+                    if any(e.chunk_id is not None for e in evidence) else ""))
     for e in evidence:
         lines.append(f"\n### {e.id} ({e.level}) {e.title}" + (f"  {e.location}" if e.location else ""))
         lines.append(e.text)
@@ -198,6 +203,8 @@ def gather_evidence(question: str, target: str | None = None, project: str | Non
         lines.append("\n※ 이 코드에 대한 인수인계 답변은 아직 없습니다. 이유를 단정하지 말고 [추정]으로 쓰세요.")
     if not has_fact:
         lines.append("※ 코드 원문을 읽지 못했습니다 (원본 폴더가 없음).")
+    for c in conflicts:  # 규칙으로 찾은 문서–코드 불일치: 답에 "문서와 코드가 달라요"로 짚고 질문을 제안하게
+        lines.append(f"※ {c.message}. 물어볼 질문: {c.question}")
     return "\n".join(lines)
 
 

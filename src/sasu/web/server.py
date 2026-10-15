@@ -2,16 +2,19 @@
 
 화면 파일(static/)은 외부 CDN 없이 이 패키지 안에 있다. 인터넷이 막힌 PC에서도 그대로 열린다.
 요청마다 지금 프로젝트의 분석 파일을 새로 연다 (sasu use로 바꾸면 바로 반영).
+물어보기의 검색 색인·질문 넓히기는 메모리에 두고, 분석 파일이 바뀌면 다시 만든다 (_AskCache).
 """
 
+import copy
 import mimetypes
 import sqlite3
 import tempfile
+import threading
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -66,6 +69,8 @@ class AskIn(BaseModel):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="사수 SASU", docs_url="/api/docs", redoc_url=None)
+    ask_cache = _AskCache()
+    app.state.ask_cache = ask_cache
 
     @app.middleware("http")
     async def no_stale_screen(request, call_next):
@@ -157,6 +162,34 @@ def create_app() -> FastAPI:
         return FileResponse(out, filename=f"{name}-기존동작목록.xlsx",
                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    @app.get("/api/handover-doc")
+    def handover_doc(format: str = "docx", module: str | None = None, business: str | None = None):
+        """인수인계서 (화면/업무별 코드·답변·확인 필요 빈칸). format=docx|md. module·business로 나눠 받는다."""
+        from sasu.analysis.handover_doc import build_handover_doc, docx_available, render_markdown, write_docx
+
+        if format not in ("docx", "md"):
+            raise HTTPException(400, "format은 docx 또는 md예요.")
+        if format == "docx" and not docx_available():
+            raise HTTPException(501, "docx로 만들려면 python-docx가 필요해요 (pip install 'sasu[docx]'). format=md는 바로 됩니다.")
+        name = current_project() or "project"
+        for part in (module, business):
+            if part and (safe := "".join(ch for ch in part.strip() if ch.isalnum() or ch in "._-")):
+                name = f"{name}-{safe}"
+        with _connect() as conn:
+            doc = build_handover_doc(conn, module or None, business or None)
+        if not doc.businesses:
+            raise HTTPException(404, "범위에 맞는 URL이 없어요. 모듈 이름이나 업무명을 확인하세요.")
+        if format == "md":
+            from urllib.parse import quote
+
+            filename = quote(f"{name}-인수인계서.md")
+            return Response(render_markdown(doc), media_type="text/markdown; charset=utf-8",
+                            headers={"Content-Disposition": f"attachment; filename*=utf-8''{filename}"})
+        out = Path(tempfile.gettempdir()) / f"sasu-{name}-인수인계서.docx"
+        write_docx(doc, out)
+        return FileResponse(out, filename=f"{name}-인수인계서.docx",
+                            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
     # ── 경로 추적 ────────────────────────────────────────────
 
     @app.get("/api/urls")
@@ -187,7 +220,11 @@ def create_app() -> FastAPI:
             broken: dict[int, list[str]] = {}
             for b in broken_sql_calls(conn):
                 broken.setdefault(b.method_id, []).append(b.query_id)
-            return {"url": url, "tree": _node(trace_url(conn, url, full=full), names, broken)}
+            from sasu.docs.evidence import DocCounts
+
+            # 노드마다 docs: 이어진 인수인계 문서 조각 수 (문서를 넣었을 때만. 눌러서 /api/docs/linked)
+            docs = DocCounts(conn) or None
+            return {"url": url, "tree": _node(trace_url(conn, url, full=full), names, broken, docs)}
 
     @app.get("/api/code")
     def code(path: str, start: int = 1, end: int | None = None):
@@ -221,6 +258,9 @@ def create_app() -> FastAPI:
                 "SELECT * FROM questions WHERE stale = 0 ORDER BY priority DESC, id"
             ).fetchall()
             names = Labels(conn)
+            from sasu.docs.evidence import DocCounts
+
+            docs = DocCounts(conn)
             items = []
             for r in rows:
                 class_id, method_id = _question_target(conn, r["target"], r["file_path"])
@@ -234,6 +274,8 @@ def create_app() -> FastAPI:
                     # 한글 이름표 "휴가관리 · 휴가를 등록한다"와 대상 클래스의 모듈 (uss.ion, 그 업무명)
                     "label": names.full(method_id) if method_id else names.class_label(class_id),
                     "module": module, "module_label": names.module_label(module),
+                    # 대상 코드(Class.method·클래스)와 이어진 인수인계 문서 조각 수
+                    "docs": len(docs.for_method(r["target"])) if docs else 0,
                 })
         answered = sum(1 for q in items if q["status"] == "answered")
         skipped = sum(1 for q in items if q["status"] == "skipped")
@@ -313,10 +355,19 @@ def create_app() -> FastAPI:
     def ask_evidence(body: AskIn):
         """대상 코드를 찾고 근거를 모은다. LLM은 부르지 않는다 (빠름)."""
         with _connect() as conn:
-            sel = choose_target(conn, body.question, body.target, body.method_id)
+            sel = choose_target(conn, body.question, body.target, body.method_id, **ask_cache.options(conn))
             chosen = sel.target
-            evidence = evidence_for(conn, chosen, body.use_git) if chosen else []
+            from sasu.docs.search import DocIndex
+            from sasu.rag.pipeline import doc_conflicts_for, embedder_or_none, search_docs
+
+            doc_index = DocIndex(conn, embedder_or_none())  # 근거·문서 검색이 함께 쓴다 (조각 수백 개라 빠름)
+            evidence = (evidence_for(conn, chosen, body.use_git, question=body.question, doc_index=doc_index)
+                        if chosen else [])
             return {
+                # 질문과 맞는 인수인계 문서 조각 (대상과 상관없이, 넣은 문서가 없으면 [])
+                "docs": [_doc_hit(conn, h) for h in search_docs(conn, body.question, index=doc_index)],
+                # 근거로 넣은 문서 조각이 코드와 다른 값을 말하는 곳 (규칙 기반) → 화면은 "문서와 코드가 달라요"
+                "doc_conflicts": [c.to_dict() for c in doc_conflicts_for(conn, evidence)],
                 # auto: 사람이 정하지 않고 검색 1위로 골랐다 → 화면이 답 전에 대상이 맞는지 묻는다
                 "auto": sel.auto,
                 "candidates": [asdict(c) for c in sel.candidates],  # 후보마다 why(고른 이유)
@@ -333,10 +384,13 @@ def create_app() -> FastAPI:
         from sasu.rag.answer import LLMError, answer, make_llm_client
 
         with _connect() as conn:
-            chosen = choose_target(conn, body.question, body.target, body.method_id).target
+            chosen = choose_target(conn, body.question, body.target, body.method_id, **ask_cache.options(conn)).target
             if chosen is None:
                 raise HTTPException(404, "관련 코드를 찾지 못했어요. 대상을 지정해 주세요.")
-            evidence = evidence_for(conn, chosen, body.use_git)
+            evidence = evidence_for(conn, chosen, body.use_git, question=body.question)
+            from sasu.rag.pipeline import doc_conflicts_for
+
+            rule_conflicts = [c.to_dict() for c in doc_conflicts_for(conn, evidence)]
         client = make_llm_client(load_settings())
         if not client.available:
             return {"error": "LLM이 설정되지 않았어요 (.env의 SASU_LLM_PROVIDER). 근거만 보여 드려요."}
@@ -349,7 +403,112 @@ def create_app() -> FastAPI:
             "cost_usd": getattr(client, "last_cost_usd", None),
             "sentences": [asdict(s) for s in result.sentences],
             "issues": result.issues,
+            # 문서와 코드가 다른 곳: 규칙으로 찾은 것(rule)과 LLM이 답에서 짚은 문장(llm)
+            "doc_conflicts": {"rule": rule_conflicts, "llm": result.doc_conflicts},
         }
+
+    # ── 인수인계 문서 (sasu.docs) ───────────────────────────
+    # GET /api/docs는 API 문서(Swagger) 자리라서 목록은 /api/docs/list. 고정 경로를 /api/docs/{doc_id}보다 먼저 둔다.
+
+    @app.post("/api/docs")
+    async def docs_upload(files: list[UploadFile] = File(...), by: str | None = Form(None)):
+        """문서 올리기 (여러 개). 임시 폴더에 받아 읽고 지운다: 원본은 남기지 않고 비밀을 가린 조각만 저장."""
+        from sasu.docs.conflicts import sync_doc_questions
+        from sasu.docs.linking import CodeNames
+        from sasu.docs.search import DocIndex, embed_chunks
+        from sasu.docs.store import add_document
+        from sasu.rag.pipeline import embedder_or_none
+
+        results = []
+        with tempfile.TemporaryDirectory() as tmp, _connect() as conn:
+            names = CodeNames(conn)
+            for i, f in enumerate(files):
+                original = Path(f.filename or f"문서{i + 1}").name
+                path = Path(tmp) / f"{i}{Path(original).suffix.lower()}"
+                path.write_bytes(await f.read())
+                results.append(add_document(conn, path, by, names, display_name=original).to_dict())
+            if any(r["status"] in ("added", "replaced") for r in results):
+                embedder = embedder_or_none()
+                if embedder is not None:
+                    embed_chunks(DocIndex(conn).texts, embedder)
+                sync_doc_questions(conn)
+            conflicts = conn.execute(
+                "SELECT COUNT(*) FROM questions WHERE kind = 'doc_check' AND stale = 0").fetchone()[0]
+        # results[]: name·status(added|replaced|unchanged|failed)·chunks·redactions{종류: 개수}·links·missing·reason
+        return {"results": results, "doc_conflicts": conflicts}
+
+    @app.get("/api/docs/list")
+    def docs_list():
+        from sasu.docs.store import list_documents
+
+        with _connect() as conn:
+            return {"documents": list_documents(conn)}
+
+    @app.get("/api/docs/search")
+    def docs_search(q: str, top: int = 6):
+        from sasu.rag.pipeline import search_docs
+
+        with _connect() as conn:
+            return {"hits": [_doc_hit(conn, h) for h in search_docs(conn, q, top)]}
+
+    @app.get("/api/docs/linked")
+    def docs_linked(kind: str, value: str):
+        """코드 노드와 이어진 조각 ("문서 n건"을 눌렀을 때). kind: url·method(Class.method, 그 클래스 포함)·table·class·label."""
+        from sasu.docs.evidence import DocCounts
+        from sasu.docs.store import chunk_dict
+
+        with _connect() as conn:
+            counts = DocCounts(conn)
+            if kind == "method":
+                ids = counts.for_method(value)
+            elif kind == "table":
+                ids = counts.for_tables(value)
+            else:
+                ids = counts.chunks(kind, value)
+            rows = [conn.execute(
+                """SELECT c.*, d.name, d.doc_date FROM doc_chunks c JOIN documents d ON d.id = c.doc_id WHERE c.id = ?""",
+                (cid,)).fetchone() for cid in sorted(ids)]
+            return {"chunks": [chunk_dict(conn, r) for r in rows if r is not None]}
+
+    @app.get("/api/docs/conflicts")
+    def docs_conflicts():
+        from sasu.docs.conflicts import all_conflicts
+
+        with _connect() as conn:
+            return {"conflicts": [c.to_dict() for c in all_conflicts(conn)]}
+
+    @app.get("/api/docs/chunks/{chunk_id}")
+    def docs_chunk(chunk_id: int):
+        from sasu.docs.store import chunk_dict
+
+        with _connect() as conn:
+            r = conn.execute(
+                "SELECT c.*, d.name, d.doc_date FROM doc_chunks c JOIN documents d ON d.id = c.doc_id WHERE c.id = ?",
+                (chunk_id,)).fetchone() if _has_doc_tables(conn) else None
+            if r is None:
+                raise HTTPException(404, f"조각 {chunk_id}이 없어요.")
+            return chunk_dict(conn, r)
+
+    @app.get("/api/docs/{doc_id}")
+    def docs_detail(doc_id: int):
+        from sasu.docs.store import document_chunks, list_documents
+
+        with _connect() as conn:
+            doc = next((d for d in list_documents(conn) if d["id"] == doc_id), None)
+            if doc is None:
+                raise HTTPException(404, f"문서 {doc_id}가 없어요.")
+            return {"document": doc, "chunks": document_chunks(conn, doc_id)}
+
+    @app.delete("/api/docs/{doc_id}")
+    def docs_delete(doc_id: int):
+        from sasu.docs.conflicts import sync_doc_questions
+        from sasu.docs.store import delete_document
+
+        with _connect() as conn:
+            if not delete_document(conn, doc_id):
+                raise HTTPException(404, f"문서 {doc_id}가 없어요.")
+            sync_doc_questions(conn)
+        return {"deleted": doc_id}
 
     # ── 정리 (불필요한 소스·공통화) ─────────────────────────
 
@@ -395,6 +554,57 @@ class _NoProject(Exception):
     pass
 
 
+def _db_key(conn: sqlite3.Connection) -> tuple | None:
+    """연결된 분석 파일의 (경로, 변경 시각, 크기). 파일이 아니면 None."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    file = row["file"] if row else ""
+    if not file:
+        return None
+    try:
+        stat = Path(file).stat()
+    except OSError:
+        return None
+    return str(Path(file).resolve()), stat.st_mtime_ns, stat.st_size
+
+
+class _AskCache:
+    """물어보기 검색 색인(MethodIndex)과 질문 넓히기(QueryExpander)를 메모리에 둔다.
+
+    색인은 메서드 9천 개짜리 eGovFrame에서 만드는 데 1.5초쯤 걸려, 요청마다 만들면 묻기가 그만큼 느려진다.
+    분석 파일의 경로·변경 시각·크기를 키로 둬서 프로젝트를 바꾸거나(경로), 다시 분석하거나 인수인계 답변을
+    저장하면(파일이 바뀜) 다음 요청에서 다시 만든다. .env 설정을 바꾸면 서버를 다시 켠다.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._key: tuple | None = None
+        self._index = None
+        self._expander = None
+        self.builds = 0  # 색인을 만든 횟수 (테스트·확인용)
+
+    def options(self, conn: sqlite3.Connection) -> dict:
+        """search_question에 넘길 index·expander. 요청마다 얕은 복사를 준다: 큰 사전은 함께 쓰고,
+        DB 연결과 '마지막 넓히기' 기록만 요청별로 (동시 요청이 서로 덮어쓰지 않게)."""
+        from sasu.rag.expand import make_expander
+        from sasu.rag.pipeline import embedder_or_none
+        from sasu.rag.search import MethodIndex
+
+        key = _db_key(conn)
+        with self._lock:  # 처음 만드는 동안 들어온 요청은 기다렸다가 같은 색인을 쓴다
+            if key is None or key != self._key:
+                index, expander = MethodIndex(conn, embedder_or_none()), make_expander()
+                if hasattr(expander, "hints"):
+                    expander.hints(conn)  # 프롬프트 힌트도 미리 (복사본이 함께 쓴다)
+                self.builds += 1
+                if key is None:
+                    return {"index": index, "expander": expander}
+                self._key, self._index, self._expander = key, index, expander
+            index, expander = self._index, self._expander
+        index = copy.copy(index)
+        index.conn = conn  # 벡터 검색은 이번 요청의 연결로
+        return {"index": index, "expander": copy.copy(expander) if expander is not None else None}
+
+
 class _connect:
     """with _connect() as conn: 요청마다 지금 프로젝트의 분석 파일을 열고 닫는다."""
 
@@ -409,12 +619,17 @@ class _connect:
         self.conn.close()
 
 
-def _node(node: TraceNode, names: Labels | None = None, broken: dict[int, list[str]] | None = None) -> dict:
+def _node(node: TraceNode, names: Labels | None = None, broken: dict[int, list[str]] | None = None,
+          docs=None) -> dict:
     data = {
         "kind": node.kind, "label": node.label, "location": node.location, "detail": node.detail,
         "note": node.note, "count": node.count, "repeated": node.repeated,
-        "children": [_node(c, names, broken) for c in node.children],
+        "children": [_node(c, names, broken, docs) for c in node.children],
     }
+    if docs is not None:  # 이어진 문서 조각 수 (url: URL, method: Class.method·클래스, statement: 테이블)
+        found = (docs.chunks("url", node.label) if node.kind == "url" else docs.for_method(node.label)
+                 if node.kind == "method" else docs.for_tables(node.detail) if node.kind == "statement" else set())
+        data["docs"] = len(found)
     if node.kind == "method":
         # label은 이미 Class.method라서 한글 설명은 label_ko로 더한다
         data["label_ko"] = names.method_label(node.method_id) if names else None
@@ -422,6 +637,19 @@ def _node(node: TraceNode, names: Labels | None = None, broken: dict[int, list[s
     elif node.kind == "statement":
         data["estimated"] = node.note is not None  # 동적 ID·메서드 이름 등으로 추정한 연결
     return data
+
+
+def _has_doc_tables(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'doc_chunks'").fetchone() is not None
+
+
+def _doc_hit(conn: sqlite3.Connection, hit) -> dict:
+    """문서 검색 결과 하나: 조각(chunk_dict) + score·coverage."""
+    from sasu.docs.store import chunk_dict
+
+    r = conn.execute("SELECT c.*, d.name, d.doc_date FROM doc_chunks c JOIN documents d ON d.id = c.doc_id WHERE c.id = ?",
+                     (hit.chunk_id,)).fetchone()
+    return {**chunk_dict(conn, r, links=False), "score": hit.score, "coverage": hit.coverage}
 
 
 def _search_urls(conn: sqlite3.Connection, names: Labels, query: str) -> list[str]:

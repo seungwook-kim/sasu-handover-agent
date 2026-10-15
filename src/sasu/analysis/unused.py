@@ -9,6 +9,8 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 
+from sasu.analysis.django_signals import load_facts
+
 # 코드가 아니라 프레임워크가 부르는 메서드
 FRAMEWORK_CALLED = {
     "PostConstruct", "PreDestroy", "Scheduled", "Bean", "EventListener", "ExceptionHandler",
@@ -50,7 +52,7 @@ def find_unused(conn: sqlite3.Connection) -> UnusedReport:
     report.broken_sql = _broken_sql(conn)
     report.sql = _unused_sql(conn, literal_blob)
     report.url = _unused_urls(conn, literal_blob)
-    report.method = _unused_methods(conn)
+    report.method = _unused_methods(conn) + _unused_python_methods(conn)
     report.jsp = _unused_jsps(conn, literal_blob)
     return report
 
@@ -182,14 +184,25 @@ def _unused_urls(conn: sqlite3.Connection, literal_blob: str) -> list[Finding]:
         r["dst_name"] for r in conn.execute("SELECT DISTINCT dst_name FROM edges WHERE dst_kind = 'url'")
     }
     rows = conn.execute(
-        """SELECT DISTINCT u.url, m.line_start, f.path, c.name AS class_name, m.name AS method_name
+        """SELECT DISTINCT u.url, m.line_start, f.path, c.name AS class_name, m.name AS method_name, f.kind AS lang
            FROM url_mappings u JOIN methods m ON m.id = u.method_id
            JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
            ORDER BY u.url"""
     ).fetchall()
+    url_names, used_names = _django_url_names(conn)
     findings = []
+    seen_python: set[str] = set()
     for r in rows:
         url = r["url"]
+        if r["lang"] == "python":
+            # Django는 {% url 'basket:summary' %}·reverse()로 이름을 불러 경로 문자열이 코드에 없다.
+            # 이름이 있으면 이름(네임스페이스를 뗀 끝부분)으로 찾고, 이름도 없고 경로에 변수가 있으면 판단하지 않는다
+            if url in seen_python:
+                continue  # 클래스 뷰는 get·post·get_queryset 등 여러 메서드가 같은 URL에 걸린다
+            seen_python.add(url)
+            names = url_names.get(url, [])
+            if any(n in used_names for n in names) or (not names and ("<" in url or "(" in url)):
+                continue
         if url in referenced or _in_text(url, literal_blob) or "{" in url or url == "/":
             continue  # "/"는 브라우저가 처음 여는 주소라 부르는 곳이 없어도 쓰인다
         findings.append(
@@ -218,6 +231,7 @@ def _unused_methods(conn: sqlite3.Connection) -> list[Finding]:
                    c.name AS class_name, c.superclass, c.interfaces, f.path
             FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
             WHERE c.kind IN ('class', 'module') AND c.stereotype IN ({",".join("?" * len(STEREOTYPES))})
+                  AND f.kind != 'python'
             ORDER BY f.path, m.line_start""",
         STEREOTYPES,
     ).fetchall()
@@ -248,6 +262,121 @@ def _unused_methods(conn: sqlite3.Connection) -> list[Finding]:
                 reason=f"부르는 코드·설정이 없음 ({r['line_end'] - r['line_start'] + 1}줄)",
             )
         )
+    return findings
+
+
+def _django_url_names(conn: sqlite3.Connection) -> tuple[dict[str, list[str]], set[str]]:
+    """(URL → path(name=...) 이름들, 템플릿·코드가 부르는 이름). 이름은 네임스페이스를 뗀 끝부분으로 맞춘다
+    (basket:summary → summary). 네임스페이스까지 맞추지 않아 "쓰는 것"으로 넉넉하게 본다."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'pyurlnames'").fetchone()
+    if row is None:
+        return {}, set()
+    facts = load_facts(conn)
+    # path("x/", view, name="x")의 "x" 자체는 부르는 곳이 아니다 (path 호출이 여러 줄이어도 몇 줄 안에 있다)
+    defined: dict[tuple[int, str], list[int]] = {}
+    for f in facts:
+        if f["k"] == "urlname":
+            defined.setdefault((f["file_id"], f["name"]), []).append(f["line"])
+    used = {r["value"] for r in conn.execute("SELECT DISTINCT value FROM refs WHERE kind = 'urlname'")}
+    for r in conn.execute(
+        """SELECT DISTINCT s.value, s.line, f.id AS file_id FROM string_literals s JOIN methods m ON m.id = s.method_id
+           JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+           WHERE f.kind = 'python' AND length(s.value) < 80"""
+    ):
+        if not any(0 <= r["line"] - line <= 6 for line in defined.get((r["file_id"], r["value"]), [])):
+            used.add(r["value"])
+    used |= {f["value"] for f in facts if f["k"] in ("urlref", "str")}
+    return json.loads(row["value"]), {u.rsplit(":", 1)[-1] for u in used}
+
+
+# Python 메서드 중 프레임워크가 이름으로 부르는 것 (Django 모델·폼·뷰·관리자·필드·명령·DRF 훅)
+_PY_HOOK = re.compile(
+    r"^(get_|has_|clean|save|delete|render|to_python|from_db_value|value_|format_|process_|handle|add_arguments|"
+    r"ready|setup|dispatch|validate|deconstruct|contribute_to_class|formfield|pre_save|post_|test_func|as_|run$|"
+    r"execute|perform_|create|update|destroy|list$|retrieve|partial_update|filter_|paginate|natural_key|check|"
+    r"items$|location$|lastmod$|changefreq$|priority$|form_|lookup|queryset|label_from_instance|decompress|"
+    r"compress|widget_attrs|bound_data|has_changed|prepare_|index_queryset|should_update|full_clean|"
+    r"serialize|parse|load|dump|emit|filter$|apply_|translate_url|on_|resolve|order_|read_queryset)")
+# 프레임워크·도구가 이름이나 등록으로 부르는 모듈 (템플릿 태그·시그널·관리자·앱 설정·URL·설정·명령·테스트)
+_PY_FRAMEWORK_MODULES = re.compile(
+    r"(^|\.)(templatetags\..*|context_processors|receivers|signals|admin|apps|urls|settings\w*|conf|wsgi|asgi|manage|"
+    r"checks|migrations\..*|management\.commands\..*|tests?(\..*)?|test_\w+|conftest|setup|tasks|middleware|"
+    r"__main__|main)$")
+
+
+def _unused_python_methods(conn: sqlite3.Connection) -> list[Finding]:
+    """Python은 호출 대상을 이름으로만 알 수 있어, 확실히 안 쓰는 것만 후보로 둔다.
+    이름이 코드 어디에서든 불리거나(obj.x(), 콜백 인자, 문자열 "x", 템플릿 {{ obj.x }}) 같은 이름이 여러 곳에 정의돼
+    있거나(재정의·다형성), 데코레이터가 붙었거나(시그널·템플릿 태그·프로퍼티·작업), 프레임워크 훅 이름이거나,
+    프레임워크가 부르는 모듈(templatetags·receivers·admin·management 등)이면 뺀다. 뷰(URL에 걸린 클래스)도 뺀다."""
+    if conn.execute("SELECT 1 FROM files WHERE kind = 'python' LIMIT 1").fetchone() is None:
+        return []
+    rows = conn.execute(
+        """SELECT m.id, m.name, m.line_start, m.line_end, m.annotations, c.name AS class_name, c.kind AS class_kind,
+                  c.stereotype, c.superclass, c.interfaces, f.path, f.module
+           FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+           WHERE f.kind = 'python' ORDER BY f.path, m.line_start"""
+    ).fetchall()
+    called = {r["dst_id"] for r in conn.execute("SELECT DISTINCT dst_id FROM edges WHERE dst_kind = 'method'")}
+    names: set[str] = set()
+    for r in conn.execute("SELECT callee, name_args, keyword_args FROM calls"):
+        names.add(r["callee"])
+        names.update(a.split(".")[-1] for a in json.loads(r["name_args"]))
+        for v in json.loads(r["keyword_args"]).values():
+            names.update(re.findall(r"[A-Za-z_]\w*", v))
+    literals = {r["value"] for r in conn.execute("SELECT DISTINCT value FROM string_literals WHERE length(value) < 80")}
+    names |= literals
+    names |= {v.rsplit(".", 1)[-1] for v in literals if "." in v}  # "oscar.core.loading.default_class_loader"
+    names |= {r["value"] for r in conn.execute("SELECT DISTINCT value FROM refs WHERE kind IN ('attr', 'method')")}
+    for f in load_facts(conn):
+        if f["k"] in ("str", "urlref"):
+            names.add(f["value"])
+        elif f["k"] == "attr":
+            names.add(f["value"].split(".")[-1])
+        elif f["k"] == "names":
+            names.update(f["value"].split())
+    for r in conn.execute("SELECT target FROM url_patterns"):
+        names.update(re.findall(r"[A-Za-z_]\w*", r["target"]))
+    # getattr(self, "apply_" + x), "_validate_%s" % type, f"handle_{x}": 이 앞부분으로 시작하는 이름은 동적으로 불린다
+    heads = {re.split(r"%|\{", v, maxsplit=1)[0] if ("%" in v or "{" in v) else v for v in literals}
+    prefixes = tuple(h for h in heads if h.endswith("_") and 2 < len(h) < 40 and re.fullmatch(r"\w+", h))
+    defined: dict[str, int] = {}  # 클래스 메서드 이름별 정의 수 (2곳 이상이면 재정의·다형성이라 이름만으로 판단 못 함)
+    for r in rows:
+        if r["class_kind"] == "class":
+            defined[r["name"]] = defined.get(r["name"], 0) + 1
+    class_bases: dict[str, list[str]] = {}
+    for r in conn.execute(
+        """SELECT c.name, c.superclass, c.interfaces FROM classes c JOIN files f ON f.id = c.file_id
+           WHERE f.kind = 'python' AND c.kind = 'class'"""
+    ):
+        class_bases.setdefault(r["name"].split(".")[-1], [b for b in [r["superclass"], *json.loads(r["interfaces"] or "[]")] if b])
+
+    def external_base(bases: list[str], depth: int = 0) -> bool:
+        """조상 중에 저장소 밖 클래스(models.Model·forms.Form·tables.Table)가 있나."""
+        return depth < 10 and any(b not in class_bases or external_base(class_bases[b], depth + 1) for b in bases)
+
+    findings = []
+    for r in rows:
+        name = r["name"]
+        if r["id"] in called or name in names or name.startswith("<") or (name.startswith("__") and name.endswith("__")):
+            continue
+        if defined.get(name, 0) > 1 or r["stereotype"] == "Controller" or r["path"].startswith(("docs/", "tests/")):
+            continue
+        if set(json.loads(r["annotations"])) - {"staticmethod", "classmethod"}:
+            continue  # @receiver·@register.filter·@property·@shared_task 등은 프레임워크가 부른다
+        if _PY_FRAMEWORK_MODULES.search(r["module"] or "") or (prefixes and name.startswith(prefixes)):
+            continue
+        if r["class_kind"] == "class":
+            bases = [b for b in [r["superclass"], *json.loads(r["interfaces"] or "[]")] if b]
+            if external_base(bases) and _PY_HOOK.match(name):
+                continue  # 저장소 밖 부모(models.Model·forms.Form·View)가 부르는 훅
+        findings.append(Finding(
+            kind="method",
+            name=f"{r['class_name']}.{name}",
+            location=f"{r['path']}:{r['line_start']}",
+            confidence="후보",
+            reason=f"이 이름을 부르는 코드·템플릿·문자열이 없음 ({r['line_end'] - r['line_start'] + 1}줄)",
+        ))
     return findings
 
 

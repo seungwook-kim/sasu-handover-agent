@@ -3,6 +3,7 @@
 - 확인된 사실: 코드·SQL·호출 관계처럼 분석으로 확정한 것
 - 인수인계 답변: 떠난 개발자가 질문지에 적은 답
 - 기록: 주석, 파일 머리말 수정 이력, 커밋 메시지 (사람이 남겼지만 지금도 맞는지는 모름)
+- 문서: 전임자가 남긴 인수인계 문서의 조각 (오래됐을 수 있어 코드보다 낮게 믿는다. sasu.docs.evidence가 붙인다)
 """
 
 import re
@@ -15,6 +16,7 @@ from sasu.linker import normalize_url
 from sasu.trace import TraceNode
 
 FACT, ANSWER, RECORD = "확인된 사실", "인수인계 답변", "기록"
+DOC = "문서"
 _MAX_CODE_LINES = 150  # 긴 메서드의 뒷부분(예외 처리·null 검사)이 잘리지 않게
 
 
@@ -25,6 +27,7 @@ class Evidence:
     title: str
     text: str
     location: str | None = None
+    chunk_id: int | None = None  # 문서 근거일 때 조각 id (화면에서 조각 보기)
 
 
 @dataclass

@@ -99,7 +99,8 @@ def main() -> None:
     run("uv", "build", "--wheel", "-o", str(wheels))
     requirements = bundle / "requirements.txt"
     export = ["uv", "export", "--no-hashes", "--no-dev", "--no-emit-project", "--frozen", "-o", str(requirements)]
-    export += ["--extra", "mcp"]  # 에이전트 연결(MCP)은 가벼워서 늘 넣는다
+    # 에이전트 연결(MCP)·문서 읽기(PDF·HWP)·Word 인수인계서는 가벼워서 늘 넣는다
+    export += ["--extra", "mcp", "--extra", "docs", "--extra", "docx"]
     if args.local_embed:
         export += ["--extra", "local-embed"]
     run(*export)
@@ -118,7 +119,7 @@ def main() -> None:
         TextEmbedding(model_name=MODEL, cache_dir=str(models))
         (bundle / ".env.example").write_text("SASU_EMBED_PROVIDER=local\n", encoding="utf-8")
 
-    extra = "[local-embed,mcp]" if args.local_embed else "[mcp]"
+    extra = "[local-embed,mcp,docs,docx]" if args.local_embed else "[mcp,docs,docx]"
     (bundle / "install.ps1").write_text(INSTALL_PS1.replace("{extra}", extra),
                                         encoding="utf-8-sig")
     (bundle / "install.sh").write_text(INSTALL_SH.replace("{extra}", extra),

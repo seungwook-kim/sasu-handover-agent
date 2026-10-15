@@ -36,6 +36,9 @@ def test_split_defaults_to_dev_and_select():
         select(qs, "train")
     with pytest.raises(ValueError):
         select(qs + [{"id": "X", "split": "train"}], "all")
+    # holdout: 마지막 측정용 세트 (저장소 밖 파일)도 같은 도구로 잰다
+    held = qs + [{"id": "H1", "split": "holdout"}]
+    assert [q["id"] for q in select(held, "holdout")] == ["H1"] and len(select(held, "all")) == 4
 
 
 def test_wilson_interval():

@@ -18,8 +18,11 @@ def repo_of(conn: sqlite3.Connection) -> Path | None:
 
 
 def refresh_questions(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
-    """질문을 다시 만든다. 받은 답은 그대로 둔다. (전체, 새 질문, 갱신, 사라진 질문)"""
-    generated = generate_questions(conn)
+    """질문을 다시 만든다. 받은 답은 그대로 둔다. (전체, 새 질문, 갱신, 사라진 질문)
+    인수인계 문서를 넣었으면 문서와 코드가 다른 곳도 '문서 확인' 질문으로 함께 만든다."""
+    from sasu.docs.conflicts import doc_questions
+
+    generated = generate_questions(conn) + doc_questions(conn)
     new, updated, stale = save_questions(conn, generated, repo_of(conn))
     return len(generated), new, updated, stale
 
