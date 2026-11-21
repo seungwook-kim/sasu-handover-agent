@@ -133,7 +133,8 @@ def fetch_sample(
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     console.print(f"내려받는 중… ({size})")
-    subprocess.run(["git", "clone", url, str(target)], check=True)
+    # core.longpaths: Windows에서 260자 넘는 경로(eGovFrame의 ckeditor 예제 등) 때문에 clone이 실패하지 않게
+    subprocess.run(["git", "-c", "core.longpaths=true", "clone", url, str(target)], check=True)
     console.print(f"[green]완료[/green]: {target}\n다음: sasu index \"{target}\"")
 
 
@@ -167,18 +168,21 @@ def index(repo: Path = typer.Argument(..., exists=True, file_okay=False, help="�
         table.add_row("JSP", f"{stats.jsp_files:,}")
     table.add_row("URL", f"{stats.urls:,}")
     table.add_row("연결", f"{stats.edges:,}")
+    if stats.skipped:
+        table.add_row("[yellow]읽지 못한 파일[/yellow]", f"{len(stats.skipped):,} (예: {stats.skipped[0]})")
     console.print(table)
     console.print(f"저장 위치: {db_path} (지금 프로젝트로 설정됨)")
 
     # 다시 분석하면 벡터 색인도 지워진다. 임베딩을 설정해 두었으면 바로 다시 만든다 (바뀐 조각만 새로 임베딩)
     embedder = _embedder_or_none()
     if embedder is not None:
+        from sasu.rag.embeddings import embed_with_code
         from sasu.rag.search import MethodIndex
         from sasu.rag.vectors import build_vector_index
 
         with console.status(f"{embedder.name}로 벡터 색인을 만드는 중…") as status:
             total, new = build_vector_index(
-                conn, MethodIndex(conn).documents, embedder,
+                conn, MethodIndex(conn).embedding_documents(embed_with_code(embedder)), embedder,
                 progress=lambda done, all_: status.update(f"벡터 색인 {done:,}/{all_:,}"),
             )
         console.print(f"벡터 색인: 조각 {total:,}개 (새로 임베딩 {new:,}, 캐시 재사용 {total - new:,})")
@@ -345,12 +349,12 @@ def answers(sheet: Path = typer.Argument(..., exists=True, dir_okay=False, help=
 
 
 @app.command()
-def embed(provider: str = typer.Option(None, "--provider", help="local 또는 api (비우면 .env의 SASU_EMBED_PROVIDER)")) -> None:
+def embed(provider: str = typer.Option(None, "--provider", help="local, api, voyage (비우면 .env의 SASU_EMBED_PROVIDER)")) -> None:
     """메서드 조각을 임베딩해 벡터 색인을 만든다. 이후 검색은 BM25와 벡터를 섞는다 (하이브리드)."""
     import os
 
     from sasu.config import load_settings
-    from sasu.rag.embeddings import EmbeddingError, make_embedder
+    from sasu.rag.embeddings import EmbeddingError, embed_with_code, make_embedder
     from sasu.rag.search import MethodIndex
     from sasu.rag.vectors import build_vector_index
 
@@ -370,7 +374,7 @@ def embed(provider: str = typer.Option(None, "--provider", help="local 또는 ap
     started = time.perf_counter()
     with console.status(f"{embedder.name}로 임베딩하는 중…") as status:
         total, new = build_vector_index(
-            conn, index.documents, embedder,
+            conn, index.embedding_documents(embed_with_code(embedder)), embedder,
             progress=lambda done, all_: status.update(f"{embedder.name}로 임베딩하는 중… {done:,}/{all_:,}"),
         )
     console.print(
@@ -532,18 +536,27 @@ def eval_questions(
 def eval_search(
     repo: Path = typer.Argument(..., exists=True, file_okay=False, help="전체 커밋 기록이 있는 git 저장소"),
     at: str = typer.Option(..., "--at", help="수정 전 시점으로 볼 커밋·태그 (예: v5.0.0)"),
-    embed_provider: str = typer.Option(None, "--embed", help="벡터 검색도 비교: local 또는 api"),
+    embed_provider: str = typer.Option(None, "--embed", help="벡터 검색도 비교: local, api, voyage"),
+    rerank: str = typer.Option("off", "--rerank", help="마지막 검색 방법 뒤에 재순위도 잰다: off | voyage | llm"),
 ) -> None:
     """버그 증상 설명(커밋 메시지)으로 고칠 메서드를 찾는지 잰다. 기법을 하나씩 켜며 비교한다."""
     import os
 
     from sasu.evaluation.search_eval import evaluate_search
+    from sasu.rag.rerank import make_reranker
 
     if embed_provider:
         os.environ["SASU_EMBED_PROVIDER"] = embed_provider
     embedder = _embedder_or_none()
+    reranker = None
+    if rerank.strip().lower() in ("voyage", "llm"):
+        os.environ["SASU_RERANK"] = rerank.strip().lower()
+        reranker = make_reranker()
+        if reranker is None:
+            console.print(f"[red]재순위({rerank})를 쓸 수 없어요. 키·LLM 설정을 확인하세요.[/red]")
+            raise typer.Exit(1)
     with console.status(f"{at} 시점 코드로 색인하고, 이후 버그 수정 커밋을 질문으로 만드는 중…"):
-        r = evaluate_search(repo, at, embedder=embedder)
+        r = evaluate_search(repo, at, embedder=embedder, reranker=reranker)
     console.print(f"색인 시점 [bold]{r.snapshot}[/bold] · 질문 {r.queries}개 (한국어 버그 수정 커밋 제목)")
     ks = sorted(r.variants[0].recall)
     table = Table(title="상위 K개 안에 고친 메서드가 있는 비율", title_justify="left")

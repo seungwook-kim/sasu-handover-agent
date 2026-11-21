@@ -126,14 +126,17 @@ flowchart LR
 | `SASU_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI 호환 주소 (현장: 사내 LLM 서버) |
 | `SASU_LLM_API_KEY` | 빈 값 | 키 없는 사내 서버면 비우거나 `none` |
 | `SASU_LLM_MODEL` | 빈 값 | 모델 이름 (claude-code는 기본 `sonnet`, anthropic은 기본 `claude-opus-5-5`, `haiku`·`sonnet`·`opus` 짧은 이름 가능) |
-| `SASU_EMBED_PROVIDER` | `none` | `none`, `local`(fastembed), `api`(OpenAI 호환 `/embeddings`) |
+| `SASU_EMBED_PROVIDER` | `none` | `none`, `local`(fastembed), `api`(OpenAI 호환 `/embeddings`), `voyage`(Voyage AI, 기본 모델 `voyage-code-3`, 키는 `SASU_EMBED_API_KEY` 또는 `VOYAGE_API_KEY`) |
 | `SASU_EMBED_MODEL` | local: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 임베딩 모델 (api는 필수) |
 | `SASU_EMBED_BASE_URL` · `SASU_EMBED_API_KEY` | LLM 값 | 임베딩 서버가 따로 있을 때 |
+| `SASU_EMBED_CODE` | `auto` | 임베딩 조각에 메서드 원문 코드를 붙일지. `auto`(API 임베딩일 때만) · `on` · `off`. BM25 조각은 그대로 |
+| `SASU_HYBRID_FUSION` · `SASU_VECTOR_WEIGHT` | API 임베딩 `minmax`·0.8, 로컬 `linear`·0.3 | BM25와 벡터 섞기. `linear`: BM25/최고점 + w×코사인, `minmax`: 둘 다 0~1로 맞춘 뒤 (1-w)·BM25 + w·벡터 ([실험](rag.md#voyage-임베딩과-재순위-2026-11-21)) |
 | `SASU_QUERY_EXPAND` | `auto` | 묻기 검색 전 LLM 질문 넓히기. `auto`(LLM이 설정돼 있으면 켬) · `on` · `off`. 대상을 직접 적은 질문(Class.method·URL·파일:줄)에는 쓰지 않는다 |
 | `SASU_EXPAND_MODEL` | claude-code: `haiku` / anthropic: `claude-haiku-5-5` / OpenAI 호환: `SASU_LLM_MODEL` | 질문 넓히기·재순위에 쓸 모델 (빠른 모델 권장) |
 | `SASU_EXPAND_PROVIDER` | `auto` | 넓히기·재순위 공급자: `auto`(= `SASU_LLM_PROVIDER`) · `anthropic` · `claude-code` · `openai` |
 | `SASU_EXPAND_VARIANT` | `default` | 넓히기 프롬프트 변형 `default` · `strict` · `union2` (흔들림 실험용) |
-| `SASU_RERANK` | `auto` | LLM 재순위 `auto`(넓히기 공급자가 anthropic일 때만) · `llm` · `off` |
+| `SASU_RERANK` | `auto` | 재순위 `auto`(넓히기 공급자가 anthropic일 때만 `llm`) · `llm` · `voyage`(직접 켤 때만, [실험](rag.md#voyage-임베딩과-재순위-2026-11-21)) · `off` |
+| `SASU_RERANK_MODEL` · `SASU_VOYAGE_RERANK_POOL` | `rerank-2.5` · `30` | Voyage 재순위 모델과 후보 수. 후보 글은 한 줄 설명 + 원문 코드 |
 | `SASU_RERANK_POOL` | `40` | 재순위에 보여 줄 후보 수 (6~60) |
 | `SASU_DOC_JUDGE` | `off` | `on`이면 문서–코드 불일치를 LLM으로도 판정 (`--llm-judge`와 같음) |
 | `SASU_JUDGE_PROVIDER` · `SASU_JUDGE_MODEL` | `anthropic` · `claude-haiku-5-5` | 불일치 판정 공급자(`anthropic` · `expand`)와 모델 |

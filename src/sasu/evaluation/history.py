@@ -21,8 +21,11 @@ from pathlib import Path
 from sasu import db
 from sasu.analysis.questions import generate_questions, url_reach
 from sasu.config import cache_dir, load_settings
-from sasu.indexer import index_repository
+from sasu.indexer import index_repository, python_module
 from sasu.parsers.java_parser import parse_java
+from sasu.parsers.python_parser import parse_python
+
+_CODE_SUFFIXES = (".java", ".py")  # 버그 수정 커밋에서 고친 메서드를 찾을 파일 (Java·Python)
 
 # "디버그"의 "버그"는 버그 수정이 아니다 (chore: 디버그용 System.out.println을 LOGGER로 대체)
 FIX_PATTERN = re.compile(r"^fix\b|^fix\(|(?<!디)버그|오류|결함|취약|hotfix|\bbug\b", re.IGNORECASE)
@@ -98,7 +101,7 @@ def fix_commit_methods(repo: Path, rev: str) -> list[tuple[str, str, set[str]]]:
         status = _git(repo, "diff", "--name-status", "-M", f"{sha}^", sha)
         for line in status.splitlines():
             parts = line.split("\t")
-            if not parts or not parts[-1].endswith(".java") or parts[0].startswith("A"):
+            if not parts or not parts[-1].endswith(_CODE_SUFFIXES) or parts[0].startswith("A"):
                 continue
             old_path = parts[1]
             new_path = parts[-1]
@@ -114,7 +117,7 @@ def fix_commit_methods(repo: Path, rev: str) -> list[tuple[str, str, set[str]]]:
                     continue
                 parse_cache[key] = [
                     (cls.name.split(".")[-1], m.name, m.line_start, m.line_end)
-                    for cls in parse_java(source).classes
+                    for cls in _parse(old_path, source).classes
                     for m in cls.methods
                 ]
             for cls_name, method_name, start, end in parse_cache[key]:
@@ -122,6 +125,13 @@ def fix_commit_methods(repo: Path, rev: str) -> list[tuple[str, str, set[str]]]:
                     keys.add(f"{cls_name}.{method_name}")
         result.append((sha, subject, keys))
     return result
+
+
+def _parse(path: str, source: bytes):
+    """파일 종류에 맞는 파서. Python은 최상위 함수를 파일 이름 클래스(kind=module)로 묶어 Class.method 키가 맞는다."""
+    if path.endswith(".py"):
+        return parse_python(source, python_module(path))
+    return parse_java(source)
 
 
 def _changed_old_lines(diff: str) -> set[int]:

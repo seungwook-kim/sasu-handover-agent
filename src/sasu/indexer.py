@@ -1,6 +1,7 @@
 """분석 대상 저장소를 읽어 SQLite에 저장한다."""
 
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -36,34 +37,23 @@ class IndexStats:
     urls: int = 0
     edges: int = 0
     annotated_sql: list = field(default_factory=list)  # @Select·@Query (모든 파일을 읽은 뒤 저장)
+    skipped: list = field(default_factory=list)  # 읽지 못한 파일 (권한·깨진 링크 등). 분석은 계속한다
 
 
 def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> IndexStats:
     repo = repo.resolve()
     stats = IndexStats()
     db.reset(conn)
-    roots = python_roots(repo)
-    for path in _walk(repo):
-        rel = path.relative_to(repo).as_posix()
+    walk_root = _long_path(repo)  # Windows 260자 넘는 경로도 읽는다 (예: ckeditor/samples/old/.../swfobject.js)
+    roots = python_roots(walk_root)
+    for path in _walk(walk_root):
+        rel = path.relative_to(walk_root).as_posix()
         if f"/{rel}".find("/src/site/") >= 0:
             continue  # Maven 사이트 문서: 설명용 예제 Mapper XML이 들어 있어 실제 코드로 착각한다
-        suffix = path.suffix.lower()
-        if suffix == ".java":
-            _index_java(conn, path, rel, stats)
-        elif suffix == ".py":
-            _index_python(conn, path, rel, stats, roots)
-        elif suffix in _TEMPLATE_SUFFIXES and "/templates/" in f"/{rel}":
-            _index_refs(conn, path, rel, kind="template")
-        elif suffix == ".xml":
-            if not _index_mapper(conn, path, rel, stats, dialect):
-                _index_refs(conn, path, rel, kind="config", methods=True)
-        elif suffix == ".jsp":
-            _index_refs(conn, path, rel, kind="jsp")
-            stats.jsp_files += 1
-        elif suffix in (".js", ".html", ".htm"):
-            _index_refs(conn, path, rel, kind="web")
-        elif suffix == ".properties":
-            _index_refs(conn, path, rel, kind="config", methods=True)
+        try:
+            _index_file(conn, path, rel, stats, roots, dialect)
+        except OSError:  # 파일 하나를 못 읽어도 전체 분석은 멈추지 않는다
+            stats.skipped.append(rel)
 
     stats.statements += _store_annotated_sql(conn, stats.annotated_sql)
     link_stats = link(conn)
@@ -72,6 +62,40 @@ def index_repository(conn: sqlite3.Connection, repo: Path, dialect: str) -> Inde
     _write_meta(conn, repo, dialect)
     conn.commit()
     return stats
+
+
+_WIN_LONG = "\\\\?\\"  # \\?\ : Windows 긴 경로 접두어
+
+
+def _long_path(path: Path) -> Path:
+    r"""Windows에서 \\?\ 접두어를 붙여 MAX_PATH(260자) 제한을 피한다. 다른 OS는 그대로."""
+    text = str(path)
+    if os.name != "nt" or text.startswith(_WIN_LONG):
+        return path
+    if text.startswith("\\\\"):  # UNC (\\server\share)
+        return Path(_WIN_LONG + "UNC\\" + text[2:])
+    return Path(_WIN_LONG + text)
+
+
+def _index_file(conn: sqlite3.Connection, path: Path, rel: str, stats: IndexStats, roots: list[str],
+                dialect: str) -> None:
+    suffix = path.suffix.lower()
+    if suffix == ".java":
+        _index_java(conn, path, rel, stats)
+    elif suffix == ".py":
+        _index_python(conn, path, rel, stats, roots)
+    elif suffix in _TEMPLATE_SUFFIXES and "/templates/" in f"/{rel}":
+        _index_refs(conn, path, rel, kind="template")
+    elif suffix == ".xml":
+        if not _index_mapper(conn, path, rel, stats, dialect):
+            _index_refs(conn, path, rel, kind="config", methods=True)
+    elif suffix == ".jsp":
+        _index_refs(conn, path, rel, kind="jsp")
+        stats.jsp_files += 1
+    elif suffix in (".js", ".html", ".htm"):
+        _index_refs(conn, path, rel, kind="web")
+    elif suffix == ".properties":
+        _index_refs(conn, path, rel, kind="config", methods=True)
 
 
 def _walk(repo: Path):

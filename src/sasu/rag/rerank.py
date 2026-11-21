@@ -4,7 +4,7 @@ BM25·벡터는 낱말이 겹치는 메서드를 올릴 뿐, "잠기는 규칙�
 후보마다 클래스.메서드·한글 설명·URL·Javadoc/Docstring 앞부분·부르는 SQL과 메서드를 짧게 보여 주면
 LLM이 질문의 답이 들어 있을 메서드를 앞으로 올린다. 고르지 않은 후보는 검색 순서대로 뒤를 채운다.
 
-- 설정: SASU_RERANK = auto(기본: 넓히기 공급자가 Claude API일 때만 켬) | llm(켬) | off.
+- 설정: SASU_RERANK = auto(기본: 넓히기 공급자가 Claude API일 때만 llm) | llm | voyage | off.
   claude CLI 공급자는 호출마다 몇 초가 더 걸려 auto에서는 켜지 않는다 (llm으로 직접 켤 수 있다).
   SASU_RERANK_POOL(기본 40): LLM에 보여 줄 후보 수. 풀은 같은 클래스 3개까지로 모은다 (POOL_PER_CLASS).
 - 일상어 tune 세트(Claude API Haiku, 넓히기 default와 함께, 5번): Java 60문항 상위 6 76.7% → 97.3%,
@@ -13,6 +13,13 @@ LLM이 질문의 답이 들어 있을 메서드를 앞으로 올린다. 고르�
 - 넓히기가 일반 개념 질문(kind=general)으로 본 질문은 다시 고르지 않는다 (어차피 경고, 호출 아낌).
 - 넓히기와 같은 LLM 클라이언트(expand.make_expand_client: 빠른 모델)를 쓴다.
 - LLM이 없거나 실패하면 검색 순서 그대로 (조용히). 결과는 질문·후보 해시로 SASU_HOME/cache에 둔다.
+
+Voyage 재순위(VoyageReranker): LLM 대신 재순위 전용 모델(rerank-2.5)이 질문과 후보마다 관련도 점수를 매긴다.
+후보 글에 위 설명 줄과 **원문 코드**를 함께 넣는다. 버그 수정 커밋 평가(템플릿 56문항, voyage-code-3 섞기 위):
+요약만 R@1 41%·R@5 75% → 원문 코드까지 R@1 59%·R@5 80%, MRR 0.549 → 0.683. 호출 1번, 생성 LLM이 필요 없다.
+SASU_RERANK_MODEL(기본 rerank-2.5), SASU_VOYAGE_RERANK_POOL(기본 30). 키는 SASU_EMBED_API_KEY 또는 VOYAGE_API_KEY.
+eval-search로 다시 재면 섞기(minmax 0.8) 위에 얹었을 때 템플릿 R@1 50% → 57%·MRR 0.625 → 0.657이지만 R@5 80% → 75%,
+eGovFrame 본체 175문항은 R@5 89% → 83%·MRR 0.754 → 0.715로 오히려 떨어져 auto로는 켜지 않는다 (voyage로 직접 켠다).
 """
 
 import hashlib
@@ -27,6 +34,9 @@ from sasu.analysis.labels import Labels
 from sasu.config import Settings, cache_dir, load_settings
 
 DEFAULT_POOL = 40
+DEFAULT_VOYAGE_POOL = 30  # 30과 50이 같았다 (템플릿 평가)
+DEFAULT_VOYAGE_RERANK_MODEL = "rerank-2.5"
+_CODE_CHARS = 3000  # Voyage 재순위 후보마다 붙이는 원문 코드 길이
 POOL_PER_CLASS = 3  # 풀을 모을 때 같은 클래스 상한 (최종 6개도 LLM이 고른 대로)
 _DOC_CHARS = 160  # 후보마다 보여 줄 Javadoc/Docstring 앞부분 길이
 
@@ -44,7 +54,7 @@ SYSTEM_PROMPT = """너는 코드 검색 결과를 다시 고르는 도구다. �
 
 def mode() -> str:
     value = os.environ.get("SASU_RERANK", "auto").strip().lower()
-    return value if value in ("auto", "llm", "off") else "auto"
+    return value if value in ("auto", "llm", "voyage", "off") else "auto"
 
 
 def pool_size() -> int:
@@ -192,6 +202,94 @@ class LLMReranker:
         return reorder(hits, picked)
 
 
+class VoyageReranker:
+    """Voyage 재순위 API로 후보 전체를 관련도 순으로 다시 세운다. 실패하면 검색 순서 그대로."""
+
+    label = "Voyage 재순위"
+
+    def __init__(self, api_key: str, model: str | None = None, pool: int | None = None,
+                 base_url: str | None = None, cache: Path | None = None, use_cache: bool = True,
+                 timeout: float = 60.0):
+        from sasu.rag.embeddings import VOYAGE_URL
+
+        self.api_key = api_key
+        self.model = model or os.environ.get("SASU_RERANK_MODEL") or DEFAULT_VOYAGE_RERANK_MODEL
+        self.pool = pool or _int_env("SASU_VOYAGE_RERANK_POOL", DEFAULT_VOYAGE_POOL)
+        self.per_class = POOL_PER_CLASS
+        self.base_url = (base_url or VOYAGE_URL).rstrip("/")
+        self.cache = cache if cache is not None else cache_dir() / "rerank-voyage"
+        self.use_cache = use_cache
+        self.timeout = timeout
+        self.last_seconds: float = 0.0
+        self.last_error: str | None = None
+        self.last_cached: bool = False
+
+    @property
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+    def documents(self, conn: sqlite3.Connection, hits: list) -> list[str]:
+        from sasu.rag.source import SourceReader
+
+        names, read = Labels(conn), SourceReader(conn)
+        return [f"{describe(conn, h.method_id, names)}\n{read(h.method_id, _CODE_CHARS)}".rstrip() for h in hits]
+
+    def scores(self, question: str, docs: list[str]) -> list[float]:
+        """후보마다 관련도 (docs 순서). 캐시는 모델·질문·후보 글 해시로."""
+        key = hashlib.sha256("\n\0".join([self.model, question.strip(), *docs]).encode("utf-8")).hexdigest()[:32]
+        path = self.cache / f"{key}.json"
+        if self.use_cache and path.is_file():
+            try:
+                cached = json.loads(path.read_text(encoding="utf-8"))["scores"]
+                if len(cached) == len(docs):
+                    self.last_cached = True
+                    return [float(x) for x in cached]
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        import urllib.request
+
+        body = json.dumps({"query": question, "documents": docs, "model": self.model, "truncation": True}).encode()
+        request = urllib.request.Request(f"{self.base_url}/rerank", data=body, headers={
+            "Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        out = [0.0] * len(docs)
+        for item in data.get("data", []):
+            i = int(item["index"])
+            if 0 <= i < len(docs):
+                out[i] = float(item["relevance_score"])
+        if self.use_cache:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({"question": question, "scores": out}), encoding="utf-8")
+            except OSError:
+                pass
+        return out
+
+    def rerank(self, conn: sqlite3.Connection, question: str, hits: list, top: int = 6) -> list:
+        """hits 전체를 관련도 순으로 (같으면 검색 순서). top은 LLMReranker와 같은 모양으로 받기만 한다."""
+        started = time.perf_counter()
+        self.last_error, self.last_cached = None, False
+        try:
+            if len(hits) <= 1 or not self.available:
+                return list(hits)
+            scores = self.scores(question, self.documents(conn, hits))
+            order = sorted(range(len(hits)), key=lambda i: (-scores[i], i))
+            return [hits[i] for i in order]
+        except (OSError, ValueError, KeyError, TypeError) as e:  # 네트워크(URLError는 OSError)·키·응답 형식 오류: 검색 순서 그대로
+            self.last_error = str(e)[:200]
+            return list(hits)
+        finally:
+            self.last_seconds = time.perf_counter() - started
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(6, min(100, int(os.environ.get(name, default))))
+    except ValueError:
+        return default
+
+
 def reorder(hits: list, picked: list[int] | None) -> list:
     """고른 위치를 앞에, 나머지는 원래 순서대로. picked가 None·빈 목록이면 그대로."""
     if not picked:
@@ -200,8 +298,10 @@ def reorder(hits: list, picked: list[int] | None) -> list:
     return [hits[i] for i in picked] + [h for i, h in enumerate(hits) if i not in picked]
 
 
-def make_reranker(settings: Settings | None = None) -> LLMReranker | None:
-    """SASU_RERANK와 넓히기 공급자를 보고 만든다. 끄거나, auto인데 Claude API가 아니거나, LLM이 없으면 None."""
+def make_reranker(settings: Settings | None = None) -> "LLMReranker | VoyageReranker | None":
+    """SASU_RERANK와 임베딩·넓히기 공급자를 보고 만든다.
+    voyage: VoyageReranker (auto로는 켜지 않는다: 본체 평가에서 손해). llm(또는 auto인데 넓히기가 Claude API): LLMReranker.
+    끄거나 쓸 수 없으면 None."""
     from sasu.rag.expand import make_expand_client
 
     value = mode()
@@ -209,6 +309,11 @@ def make_reranker(settings: Settings | None = None) -> LLMReranker | None:
         return None
     try:
         settings = settings or load_settings()
+        if value == "voyage":
+            from sasu.rag.embeddings import voyage_key
+
+            voyage = VoyageReranker(voyage_key())
+            return voyage if voyage.available else None
         provider = os.environ.get("SASU_EXPAND_PROVIDER", "auto").strip().lower() or "auto"
         if provider == "auto":
             provider = settings.llm_provider

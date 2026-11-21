@@ -21,6 +21,7 @@ from sasu.rag.search import MethodIndex
 
 _PREFIX = re.compile(r"^\s*(fix|hotfix|bug)(\([^)]*\))?\s*:\s*", re.IGNORECASE)
 _HANGUL = re.compile(r"[가-힣]")
+_RERANKED = "위 + 재순위"
 
 
 @dataclass
@@ -39,7 +40,8 @@ class SearchEvalResult:
 
 
 def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
-                    work_dir: Path | None = None, embedder=None) -> SearchEvalResult:
+                    work_dir: Path | None = None, embedder=None, reranker=None) -> SearchEvalResult:
+    """reranker가 있으면 마지막 검색 방법의 상위 reranker.pool개를 다시 세운 줄을 더한다."""
     work_dir = work_dir or cache_dir()
     short = _git(repo, "rev-parse", "--short", rev).strip()
     snapshot = export_snapshot(repo, rev, work_dir / f"snapshot-{short}")
@@ -47,9 +49,10 @@ def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
     index_repository(conn, snapshot, load_settings().sql_dialect)
     index = MethodIndex(conn, embedder)
     if embedder is not None:
+        from sasu.rag.embeddings import embed_with_code
         from sasu.rag.vectors import build_vector_index
 
-        build_vector_index(conn, index.documents, embedder)
+        build_vector_index(conn, index.embedding_documents(embed_with_code(embedder)), embedder)
     labels = {label.split(".")[-2] + "." + label.split(".")[-1] for label in index.labels.values()}
 
     cases = []
@@ -72,8 +75,11 @@ def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
         plans += [
             (f"벡터만 ({embedder.name.split('/')[-1]})", "vector", False, False),
             ("BM25 + 벡터 (RRF) + 그래프", "rrf", True, True),
-            ("BM25 + 벡터 (선형 결합) + 그래프", "hybrid", True, True),
+            (f"BM25 + 벡터 ({index.fusion} {index.vector_weight:g}) + 그래프", "hybrid", True, True),
         ]
+    if reranker is not None:
+        _, mode_, expand_, graph_ = plans[-1]
+        plans.append((_RERANKED, mode_, expand_, graph_))
     last = plans[-1][0]
     variants = []
     examples: list[tuple[str, str, int | None]] = []
@@ -81,7 +87,11 @@ def evaluate_search(repo: Path, rev: str, ks: tuple[int, ...] = (1, 5, 10),
         hits = {k: 0 for k in ks}
         rr = 0.0
         for query, gold in cases:
-            found = index.search(query, top=max(ks), expand=expand, graph=graph, mode=mode)
+            if name == _RERANKED:
+                pool = index.search(query, top=max(reranker.pool, max(ks)), expand=expand, graph=graph, mode=mode)
+                found = reranker.rerank(conn, query, pool, top=max(ks))
+            else:
+                found = index.search(query, top=max(ks), expand=expand, graph=graph, mode=mode)
             ranked = [short_label(h.label) for h in found]
             rank = next((i + 1 for i, label in enumerate(ranked) if label in gold), None)
             for k in ks:

@@ -142,7 +142,7 @@ def search_question(conn: sqlite3.Connection, question: str, top: int = 6, pool:
     if reranker is not None:
         chosen = reranker.rerank(conn, question, chosen, top)[:top]
         if not getattr(reranker, "last_error", None):
-            how += " + LLM 재순위"
+            how += " + " + getattr(reranker, "label", "LLM 재순위")
     result: list[Candidate] = []
     for hit in chosen:
         t = target_of(conn, hit.method_id)

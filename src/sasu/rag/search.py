@@ -17,7 +17,8 @@ from sasu.analysis.labels import Labels
 
 _GRAPH_BOOST = 0.25  # 부르는 메서드 점수의 몇 %를 부르는 쪽에 더할지
 _CANDIDATES = 100  # 하이브리드에서 각 검색이 넘기는 후보 수
-_VECTOR_WEIGHT = 0.3  # 하이브리드: 정규화한 BM25 + 0.3 × 벡터 코사인 (평가로 정함)
+_VECTOR_WEIGHT = 0.3  # linear 하이브리드 기본: 정규화한 BM25 + 0.3 × 벡터 코사인 (로컬 MiniLM 평가로 정함)
+_CODE_EMBED_CHARS = 4000  # 임베딩 조각에 붙이는 원문 코드 최대 길이
 _MAX_DOC_CHARS = 1500  # 조각 하나의 최대 길이 (임베딩 모델 입력 한도 고려)
 _ANSWER_BOOST = 0.5  # 인수인계 답변이 질문과 맞으면 1위 점수의 최대 50%를 더한다
 _ANSWER_MIN_COVERAGE = 0.34  # 질문 단어(idf 가중) 중 답변에 있는 비율이 이 이상일 때만
@@ -88,6 +89,12 @@ class MethodIndex:
         """embedder가 있고 벡터 색인(sasu embed)이 있으면 BM25와 벡터 검색을 섞는다."""
         self.conn = conn
         self.embedder = embedder
+        # 섞는 방식은 임베딩 종류로 정한다 (embeddings.hybrid_defaults). 임베딩이 없으면 쓰지 않는다
+        self.fusion, self.vector_weight = "linear", _VECTOR_WEIGHT
+        if embedder is not None:
+            from sasu.rag.embeddings import hybrid_defaults
+
+            self.fusion, self.vector_weight = hybrid_defaults(embedder)
         docs: dict[int, list[str]] = defaultdict(list)
         self.labels: dict[int, str] = {}
         names = Labels(conn)
@@ -173,6 +180,18 @@ class MethodIndex:
                     scores[t] += overlap
         return [t for t, _ in scores.most_common(limit)]
 
+    def embedding_documents(self, with_code: bool = False) -> dict[int, str]:
+        """벡터 색인에 넣을 조각. with_code면 BM25 조각(이름·주석·SQL…) 뒤에 원문 코드를 붙인다.
+        BM25는 그대로 둔다 (코드 낱말이 BM25 길이 보정을 흐린다)."""
+        if not with_code:
+            return dict(self.documents)
+        from sasu.rag.source import SourceReader
+
+        read = SourceReader(self.conn)
+        if read.root is None:
+            return dict(self.documents)
+        return {mid: f"{text}\n{read(mid, _CODE_EMBED_CHARS)}".rstrip() for mid, text in self.documents.items()}
+
     @property
     def has_vectors(self) -> bool:
         from sasu.rag.vectors import has_vector_index
@@ -212,15 +231,16 @@ class MethodIndex:
 
     def vector(self, query: str, top: int = _CANDIDATES) -> dict[int, float]:
         """코사인 유사도 (1 - 거리)."""
+        from sasu.rag.embeddings import embed_query
         from sasu.rag.vectors import vector_search
 
-        query_vector = self.embedder.embed([query])[0]
+        query_vector = embed_query(self.embedder, query)
         return {mid: 1.0 - dist for mid, dist in vector_search(self.conn, query_vector, top) if mid in self.labels}
 
     def search(self, query: str, top: int = 5, expand: bool = True, graph: bool = True,
                mode: str = "auto", extra_terms: list[str] | None = None,
                extra_weights: dict[str, float] | None = None) -> list[Hit]:
-        """mode: bm25, vector, hybrid(선형 결합), rrf(비교용), auto(벡터 색인이 있으면 hybrid).
+        """mode: bm25, vector, hybrid(self.fusion: linear 또는 minmax), rrf(비교용), auto(벡터 색인이 있으면 hybrid).
         expand=용어 사전으로 질문 넓히기, graph=부르는 쪽으로 점수 전파 (평가에서 하나씩 끄고 비교).
         extra_terms=LLM이 넓힌 말 (BM25에만 낮은 가중치로 더한다. 벡터는 원래 질문으로)."""
         if mode == "auto":
@@ -232,7 +252,11 @@ class MethodIndex:
         elif mode == "rrf":  # 비교용: 순위만 합치면 BM25의 확신 있는 1순위가 희석된다
             scores = _rrf([self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights), self.vector(query)])
         else:
-            scores = _linear(self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights), self.vector(query), _VECTOR_WEIGHT)
+            bm = self.bm25(query, expand, extra_terms=extra_terms, extra_weights=extra_weights)
+            if self.fusion == "minmax":
+                scores = _minmax(bm, self.vector(query), self.vector_weight)
+            else:
+                scores = _linear(bm, self.vector(query), self.vector_weight)
         scores = self._answer_boost(query, scores)
         # 그래프 전파: 직접 부르는 메서드 중 가장 잘 맞는 것의 점수 일부를 더한다
         boosted = dict(scores)
@@ -305,6 +329,20 @@ def _linear(bm25: dict[int, float], vector: dict[int, float], weight: float) -> 
     for mid, cos in vector.items():
         fused[mid] = fused.get(mid, 0.0) + weight * max(cos, 0.0)
     return fused
+
+
+def _minmax(bm25: dict[int, float], vector: dict[int, float], weight: float) -> dict[int, float]:
+    """두 점수를 각각 0~1로 맞춘 뒤 (1-weight)·BM25 + weight·벡터.
+    강한 임베딩에서는 BM25 1위가 벡터를 덮어쓰지 않게 비중을 벡터 쪽으로 둔다 (embeddings.hybrid_defaults)."""
+    def scale(d: dict[int, float]) -> dict[int, float]:
+        if not d:
+            return {}
+        hi, lo = max(d.values()), min(d.values())
+        span = (hi - lo) or 1.0
+        return {mid: (v - lo) / span for mid, v in d.items()}
+
+    nb, nv = scale(bm25), scale(vector)
+    return {mid: (1 - weight) * nb.get(mid, 0.0) + weight * nv.get(mid, 0.0) for mid in nb.keys() | nv.keys()}
 
 
 def _rrf(rankings: list[dict[int, float]], k: int = 60, depth: int = _CANDIDATES) -> dict[int, float]:

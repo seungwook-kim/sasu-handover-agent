@@ -54,7 +54,7 @@ LLM이 없어도 분석·질문 생성·경로 추적·근거 모으기는 모�
 | `SASU_QUERY_EXPAND` | `auto` | `auto`(LLM이 설정돼 있으면 켬) · `on` · `off`. 사내 LLM 서버가 느리거나 호출 수를 줄여야 하면 `off` |
 | `SASU_EXPAND_MODEL` | claude CLI: `haiku` / Claude API: `claude-haiku-5-5` / OpenAI 호환: `SASU_LLM_MODEL`과 같음 | 넓히기에 쓸 모델. 사내 서버에 작고 빠른 모델이 따로 있으면 그 이름을 넣으세요 |
 | `SASU_EXPAND_PROVIDER` | `auto` | 넓히기(와 재순위)만 다른 공급자로: `auto`(`SASU_LLM_PROVIDER`와 같게) · `anthropic` · `claude-code` · `openai`. 개발 PC에서 답변은 claude CLI로, 넓히기는 `anthropic`으로 두면 넓히기가 5.17초 → 1.46초 (같은 질문 10개 평균) |
-| `SASU_RERANK` | `auto` | LLM 재순위: 검색 상위 후보를 넓히기와 같은 빠른 LLM이 다시 골라 6개를 둔다. `auto`(넓히기 공급자가 Claude API일 때만 켬) · `llm`(공급자와 상관없이 켬) · `off`. 질문당 호출 1번, 약 +1.9초 |
+| `SASU_RERANK` | `auto` | 재순위: 검색 상위 후보를 다시 세운다. `auto`(넓히기 공급자가 Claude API일 때만 LLM 재순위) · `llm` · `voyage`(Voyage rerank-2.5, 직접 켤 때만. 평가에서 이득이 일정하지 않음) · `off`. 질문당 호출 1번 |
 | `SASU_RERANK_POOL` | `40` | 재순위에 보여 줄 후보 수 (6~60, 같은 클래스는 3개까지) |
 
 `~/.sasu/.env`에 `SASU_QUERY_EXPAND=off`처럼 한 줄을 더하면 됩니다. 넓히기 결과는 `~/.sasu/cache/query-expand`, 재순위 결과는 `~/.sasu/cache/rerank`에 질문 해시로 둡니다. 넓히기 LLM은 같은 호출에서 "일반 개념 질문인지"도 판정해, 코드에 답이 없는 질문에 "딱 맞는 코드를 못 찾았어요" 경고를 띄웁니다.
