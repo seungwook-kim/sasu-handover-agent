@@ -18,6 +18,11 @@ from sasu.trace import TraceNode
 FACT, ANSWER, RECORD = "확인된 사실", "인수인계 답변", "기록"
 DOC = "문서"
 _MAX_CODE_LINES = 150  # 긴 메서드의 뒷부분(예외 처리·null 검사)이 잘리지 않게
+_REACH_DEPTH = 3  # 부르는 코드를 몇 단계까지 따라갈지 (컨트롤러 → 서비스 → DAO)
+_MAX_CALLEE_BODIES = 3  # 근거에 넣는 부르는 메서드 본문 수 (분기가 있는 것만)
+_MAX_CALLEE_LINES = 60
+_MAX_SQL_BODIES = 3
+_MAX_SQL_CHARS = 1500
 
 
 @dataclass
@@ -112,6 +117,11 @@ def gather(conn: sqlite3.Connection, target: Target, repo: Path | None, cache_di
     if calls:
         add(FACT, "이 메서드가 부르는 코드와 SQL", calls)
 
+    # 3-1. 부르는 코드·SQL의 본문. 규칙은 대상이 아니라 서비스의 분기나 쿼리의 WHERE에 있을 때가 많다
+    #      ("09를 돌려주는 조건", "공지글을 고르는 조건"이 이름·테이블만으로는 근거에 없던 문제)
+    for title, text, where in _reached_bodies(conn, repo, target.method_id):
+        add(FACT, title, text, where)
+
     # 4. 사람이 남긴 설명: Javadoc·docstring, 주의 주석, 파일 머리말 수정 이력
     if method["doc"]:
         add(RECORD, "docstring" if target.path.endswith(".py") else "Javadoc", _clean_comment(method["doc"]), loc)
@@ -196,6 +206,64 @@ def _calls_summary(conn: sqlite3.Connection, method_id: int) -> str:
 
     walk(root, 0)
     return "\n".join(lines[:60])
+
+
+def _reached_bodies(conn: sqlite3.Connection, repo: Path | None, method_id: int) -> list[tuple[str, str, str]]:
+    """대상에서 _REACH_DEPTH단계까지 부르는 메서드 중 분기가 있는 것(복잡도 2 이상)의 본문과,
+    대상·그 메서드들이 부르는 SQL 본문. 가까운 것부터 몇 개씩만. (제목, 글, 위치)."""
+    order: list[int] = []
+    seen, frontier = {method_id}, [method_id]
+    for _ in range(_REACH_DEPTH):
+        nxt = []
+        for mid in frontier:
+            for e in conn.execute(
+                "SELECT dst_id FROM edges WHERE src_kind = 'method' AND src_id = ? AND dst_kind = 'method'", (mid,)
+            ):
+                if e["dst_id"] not in seen:
+                    seen.add(e["dst_id"])
+                    nxt.append(e["dst_id"])
+                    order.append(e["dst_id"])
+        frontier = nxt
+    out: list[tuple[str, str, str]] = []
+    if repo is not None:
+        rows = [conn.execute(
+            """SELECT m.name, m.line_start, m.line_end, m.complexity, c.name AS class_name, c.stereotype, f.path
+               FROM methods m JOIN classes c ON c.id = m.class_id JOIN files f ON f.id = c.file_id
+               WHERE m.id = ?""",
+            (mid,),
+        ).fetchone() for mid in order]
+        rows = [r for r in rows if r is not None and r["complexity"] >= 2]
+        # trace와 같은 규칙: 스테레오타입(Service·Repository…)이 있는 클래스가 먼저, 유틸(날짜·문자열)은 자리가 남을 때만
+        rows.sort(key=lambda r: r["stereotype"] is None)
+        bodies = 0
+        for r in rows:
+            if bodies >= _MAX_CALLEE_BODIES:
+                break
+            end = min(r["line_end"], r["line_start"] + _MAX_CALLEE_LINES - 1)
+            code = _source(repo, r["path"], r["line_start"], end)
+            if code:
+                if end < r["line_end"]:
+                    code += f"\n… ({r['line_end'] - end}줄 생략)"
+                out.append((f"부르는 코드: {r['class_name']}.{r['name']}", code, f"{r['path']}:{r['line_start']}"))
+                bodies += 1
+    sqls: set[int] = set()
+    for mid in [method_id, *order]:
+        for s in conn.execute(
+            """SELECT s.id, s.full_id, s.line, s.sql, f.path FROM edges e JOIN statements s ON s.id = e.dst_id
+               JOIN files f ON f.id = s.file_id
+               WHERE e.src_kind = 'method' AND e.src_id = ? AND e.dst_kind = 'statement'""",
+            (mid,),
+        ):
+            if len(sqls) >= _MAX_SQL_BODIES:
+                return out
+            text = (s["sql"] or "").strip()
+            if s["id"] in sqls or not text:
+                continue
+            sqls.add(s["id"])
+            if len(text) > _MAX_SQL_CHARS:
+                text = text[:_MAX_SQL_CHARS] + " …"
+            out.append((f"SQL 본문: {s['full_id']}", text, f"{s['path']}:{s['line']}"))
+    return out
 
 
 def _mapper_history(conn: sqlite3.Connection, method_id: int, depth: int = 3) -> list[tuple[str, str]]:

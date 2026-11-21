@@ -130,6 +130,18 @@ def test_evidence_levels_and_git_history(setup):
     assert "Format" not in commits.text
 
 
+def test_evidence_includes_called_rule_and_sql_bodies(setup):
+    """컨트롤러를 물어도 규칙이 있는 서비스 본문(분기)과 쿼리 본문이 근거에 들어간다."""
+    conn, repo, tmp = setup
+    target = resolve_target(conn, "VacationController.apply")[0]
+    ev = {e.title: e for e in gather(conn, target, repo, tmp / "cache", use_git=False)}
+    body = ev["부르는 코드: VacationServiceImpl.apply"]
+    assert body.level == FACT and "no leave" in body.text and body.location.endswith("VacationServiceImpl.java:6")
+    assert "WHERE USER_ID = #{applicantId}" in ev["SQL 본문: Vacation.selectRemain"].text
+    assert "INSERT INTO TB_VCATN" in ev["SQL 본문: Vacation.insert"].text
+    assert not any(t.startswith("부르는 코드: VacationDAO") for t in ev)  # 분기 없는 DAO는 SQL 본문으로 충분
+
+
 def test_handover_answer_becomes_evidence(setup):
     conn, repo, tmp = setup
     save_questions(conn, generate_questions(conn), repo)
